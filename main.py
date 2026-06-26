@@ -13,6 +13,9 @@ from datetime import datetime
 import database as db
 import calculations as calc
 import reports
+import update_checker
+
+APP_VERSION = "1.1.0"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -54,6 +57,50 @@ class PayrollApp(tk.Tk):
 
         self._build_ui()
         self.show_dashboard()
+        self.after(800, self._check_for_updates)
+
+    # ── Auto-update ────────────────────────────────────────────────────────────
+
+    def _check_for_updates(self):
+        def worker():
+            latest_tag, download_url = update_checker.check_for_update(APP_VERSION)
+            if latest_tag:
+                self.after(0, lambda: self._prompt_update(latest_tag, download_url))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_update(self, latest_tag, download_url):
+        if not getattr(sys, 'frozen', False):
+            return  # running from source — update via `git pull` instead
+        if not messagebox.askyesno(
+            "Update Available",
+            f"A new version ({latest_tag}) is available. You're on v{APP_VERSION}.\n\n"
+            "Download and install now? The app will restart automatically."
+        ):
+            return
+
+        progress = tk.Toplevel(self)
+        progress.title("Updating...")
+        progress.geometry("320x100")
+        progress.configure(bg=C_BG)
+        progress.grab_set()
+        tk.Label(progress, text="Downloading update, please wait...",
+                 font=("Helvetica", 10), bg=C_BG).pack(pady=15)
+        pbar = ttk.Progressbar(progress, length=260, mode='determinate')
+        pbar.pack(pady=5)
+
+        def on_progress(downloaded, total):
+            pct = int(downloaded / total * 100)
+            self.after(0, lambda: pbar.config(value=pct))
+
+        def worker():
+            try:
+                update_checker.download_and_apply_update(download_url, progress_callback=on_progress)
+                self.after(0, self.destroy)
+            except Exception as ex:
+                self.after(0, lambda: messagebox.showerror("Update Failed", str(ex), parent=progress))
+                self.after(0, progress.destroy)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ── Layout ─────────────────────────────────────────────────────────────────
 
