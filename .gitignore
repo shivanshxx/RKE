@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.spec.bak
+.env
+
+# Live data — contains employee PII/financial data, never commit
+rke_payroll.db
+output/
