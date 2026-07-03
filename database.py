@@ -114,8 +114,52 @@ def init_db():
         UNIQUE(emp_id, year, month)
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS tax_slabs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        regime TEXT NOT NULL,
+        fy_start INTEGER NOT NULL,
+        min_income REAL NOT NULL,
+        max_income REAL,
+        rate REAL NOT NULL,
+        UNIQUE(regime, fy_start, min_income)
+    )""")
+
+    # Seed slabs. FY 2025-26 (Budget 2025) and FY 2026-27 (Income Tax Act 2025 —
+    # same slab structure carried forward). Update via SQL when Budget changes rates;
+    # no code change or re-release needed.
+    new_regime = [(0, 400000, 0.00), (400000, 800000, 0.05), (800000, 1200000, 0.10),
+                  (1200000, 1600000, 0.15), (1600000, 2000000, 0.20),
+                  (2000000, 2400000, 0.25), (2400000, None, 0.30)]
+    old_regime = [(0, 250000, 0.00), (250000, 500000, 0.05),
+                  (500000, 1000000, 0.20), (1000000, None, 0.30)]
+    for fy in (2025, 2026):
+        for lo, hi, rate in new_regime:
+            c.execute("""INSERT OR IGNORE INTO tax_slabs (regime, fy_start, min_income, max_income, rate)
+                         VALUES ('new', ?, ?, ?, ?)""", (fy, lo, hi, rate))
+        for lo, hi, rate in old_regime:
+            c.execute("""INSERT OR IGNORE INTO tax_slabs (regime, fy_start, min_income, max_income, rate)
+                         VALUES ('old', ?, ?, ?, ?)""", (fy, lo, hi, rate))
+
     conn.commit()
     conn.close()
+
+
+def get_tax_slabs(regime, fy_start):
+    """Slabs for a regime/FY, falling back to the latest earlier FY that has rows
+    (so a new FY keeps working with last year's slabs until updated)."""
+    conn = get_conn()
+    rows = conn.execute("""SELECT min_income, max_income, rate FROM tax_slabs
+                           WHERE regime=? AND fy_start=? ORDER BY min_income""",
+                        (regime, fy_start)).fetchall()
+    if not rows:
+        fallback = conn.execute("""SELECT MAX(fy_start) FROM tax_slabs
+                                   WHERE regime=? AND fy_start<?""", (regime, fy_start)).fetchone()[0]
+        if fallback:
+            rows = conn.execute("""SELECT min_income, max_income, rate FROM tax_slabs
+                                   WHERE regime=? AND fy_start=? ORDER BY min_income""",
+                                (regime, fallback)).fetchall()
+    conn.close()
+    return [(r['min_income'], r['max_income'], r['rate']) for r in rows]
 
 
 # ---------- Company ----------
@@ -276,6 +320,45 @@ def get_annual_salary_records(emp_id, year):
                         (emp_id, year)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------- Backup / Restore ----------
+
+def backup_db(dest_dir):
+    """Consistent snapshot of the database (uses SQLite's online backup API,
+    safe even while the app is running). Returns the backup file path."""
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    dest = os.path.join(dest_dir, f"rke_payroll_backup_{ts}.db")
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(dest)
+    with dst:
+        src.backup(dst)
+    dst.close()
+    src.close()
+    return dest
+
+
+def restore_db(backup_path):
+    """Replace the live database with a backup. A safety copy of the current
+    DB is made first. Caller must restart the app afterwards."""
+    con = sqlite3.connect(backup_path)
+    try:
+        ok = con.execute("PRAGMA integrity_check").fetchone()[0] == 'ok'
+        has_tables = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('company','employees','salary_records')"
+        ).fetchone()[0] == 3
+    finally:
+        con.close()
+    if not (ok and has_tables):
+        raise ValueError("Not a valid RKE payroll backup file.")
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    safety = os.path.join(BASE_DIR, f"pre_restore_{ts}.db")
+    import shutil
+    if os.path.exists(DB_PATH):
+        shutil.copy2(DB_PATH, safety)
+    shutil.copy2(backup_path, DB_PATH)
+    return safety
 
 
 # ---------- Password / Login ----------

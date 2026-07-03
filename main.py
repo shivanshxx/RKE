@@ -15,7 +15,7 @@ import calculations as calc
 import reports
 import update_checker
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -234,6 +234,23 @@ class PayrollApp(tk.Tk):
             tk.Button(qa_frame, text=label, font=("Helvetica", 10, "bold"),
                       bg=color, fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
                       padx=18, pady=10, command=cmd).pack(side=tk.LEFT, padx=8)
+
+        # Compliance deadlines (previous wage month)
+        dl_frame = tk.Frame(self.content, bg=C_WHITE, padx=15, pady=10,
+                            highlightbackground=C_BORDER, highlightthickness=1)
+        dl_frame.pack(fill=tk.X, padx=20, pady=(15, 0))
+        tk.Label(dl_frame, text="📅 Compliance Deadlines", font=("Helvetica", 10, "bold"),
+                 bg=C_WHITE, fg=C_DARK).pack(anchor='w')
+        status_styles = {'overdue': ("#C0392B", "OVERDUE"), 'due_soon': ("#E67E22", "DUE SOON"),
+                         'upcoming': ("#1E7E34", "Upcoming")}
+        for name, due, status in calc.compliance_deadlines():
+            color, tag = status_styles[status]
+            row = tk.Frame(dl_frame, bg=C_WHITE)
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=f"[{tag}]", font=("Helvetica", 9, "bold"), bg=C_WHITE,
+                     fg=color, width=10, anchor='w').pack(side=tk.LEFT)
+            tk.Label(row, text=f"{name} — due {due.strftime('%d %b %Y')}",
+                     font=("Helvetica", 9), bg=C_WHITE, fg="#444").pack(side=tk.LEFT)
 
         # Statutory notice
         notice = tk.Frame(self.content, bg="#FFF3CD", padx=15, pady=10)
@@ -725,6 +742,8 @@ class PayrollApp(tk.Tk):
              self._report_annual_register),
             ("🏦 PF/ESI Contribution Report", "Monthly PF & ESI liabilities (Employee + Employer)",
              self._report_pf_esi),
+            ("📤 PF ECR File (EPFO Upload)", "Generate the ||-delimited ECR text file for the EPFO unified portal",
+             self._report_pf_ecr),
         ]
 
         for title, desc, cmd in report_items:
@@ -802,6 +821,26 @@ class PayrollApp(tk.Tk):
         messagebox.showinfo("PDF Generated", f"PF/ESI report saved to:\n{path}")
         os.startfile(path)
 
+    def _report_pf_ecr(self):
+        month = CURRENT_MONTH
+        year  = CURRENT_YEAR
+        records = db.get_monthly_salaries(year, month)
+        if not records:
+            # Fall back to the previous month — ECR is usually filed for last month's wages
+            month = month - 1 or 12
+            year = year if CURRENT_MONTH > 1 else year - 1
+            records = db.get_monthly_salaries(year, month)
+        if not records:
+            messagebox.showwarning("No Data", "No processed salary records found for this or last month.")
+            return
+        employees_by_id = {e['id']: e for e in db.get_all_employees()}
+        path, skipped = reports.generate_pf_ecr(records, employees_by_id, year, month)
+        msg = f"ECR file for {calc.MONTH_NAMES[month]} {year} saved to:\n{path}"
+        if skipped:
+            msg += "\n\n⚠️ Skipped (no UAN on record):\n" + "\n".join(skipped)
+        messagebox.showinfo("ECR Generated", msg)
+        os.startfile(reports.OUTPUT_DIR)
+
     # ══════════════════════════════════════════════════════════════════════════
     #  SETTINGS
     # ══════════════════════════════════════════════════════════════════════════
@@ -868,6 +907,51 @@ class PayrollApp(tk.Tk):
             tk.Button(frame, text="🗑 Remove Password", font=("Helvetica", 10),
                       bg=C_RED, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
                       command=self._remove_password).grid(row=sec_row+3, column=1, sticky='w', padx=10)
+
+        # ── Backup / Restore ──────────────────────────────────────────────────
+        bk_row = sec_row + 4
+        ttk.Separator(frame, orient='horizontal').grid(row=bk_row, column=0, columnspan=6,
+                                                        sticky='ew', pady=(15, 15))
+        tk.Label(frame, text="💾 Data Backup", font=("Helvetica", 12, "bold"),
+                 bg=C_BG, fg=C_DARK).grid(row=bk_row+1, column=0, columnspan=6, sticky='w', padx=10)
+        tk.Label(frame, text="Back up all employee and salary data to a file you can copy to a pen drive or cloud folder.",
+                 font=("Helvetica", 9), bg=C_BG, fg="#666").grid(
+            row=bk_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
+        tk.Button(frame, text="📤 Backup Now", font=("Helvetica", 10, "bold"),
+                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
+                  command=self._backup_now).grid(row=bk_row+3, column=0, sticky='w', padx=10)
+        tk.Button(frame, text="📥 Restore From Backup", font=("Helvetica", 10),
+                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
+                  command=self._restore_backup).grid(row=bk_row+3, column=1, sticky='w', padx=10)
+
+    def _backup_now(self):
+        dest_dir = filedialog.askdirectory(title="Choose backup folder")
+        if not dest_dir:
+            return
+        try:
+            path = db.backup_db(dest_dir)
+            messagebox.showinfo("Backup Complete", f"Backup saved to:\n{path}")
+        except Exception as ex:
+            messagebox.showerror("Backup Failed", str(ex))
+
+    def _restore_backup(self):
+        if not messagebox.askyesno(
+            "Confirm Restore",
+            "Restoring will REPLACE all current data with the backup.\n"
+            "A safety copy of the current data will be kept.\n\nContinue?"):
+            return
+        path = filedialog.askopenfilename(title="Select backup file",
+                                           filetypes=[("Database backup", "*.db"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            safety = db.restore_db(path)
+            messagebox.showinfo("Restore Complete",
+                                f"Data restored. Previous data saved at:\n{safety}\n\n"
+                                "The app will now close — reopen it to load the restored data.")
+            self.destroy()
+        except Exception as ex:
+            messagebox.showerror("Restore Failed", str(ex))
 
     def _save_settings(self):
         data = {k: v.get() for k, v in self._setting_vars.items()}
@@ -1019,6 +1103,11 @@ class EmployeeForm(tk.Toplevel):
         field(sec1, 2, 1, "Date of Joining","doj",      '', 15)
         field(sec1, 3, 0, "PAN",           "pan",       '', 15)
         field(sec1, 3, 1, "Aadhaar",       "aadhaar",   '', 18)
+        # Mask stored Aadhaar on display (UIDAI guidance): show XXXX-XXXX-1234.
+        # On save, a masked value means "unchanged" and the original is kept.
+        self._orig_aadhaar = str(emp.get('aadhaar', '') or '')
+        if len(self._orig_aadhaar) >= 4 and self._orig_aadhaar.isdigit():
+            self._vars['aadhaar'].set(f"XXXX-XXXX-{self._orig_aadhaar[-4:]}")
 
         # Job info
         sec2 = section("Job Details")
@@ -1085,6 +1174,34 @@ class EmployeeForm(tk.Toplevel):
         if db.emp_code_exists(data['emp_code'], self.emp_id):
             messagebox.showerror("Duplicate", "Employee code already exists.", parent=self)
             return
+
+        # Masked Aadhaar means unchanged — keep the stored original
+        if 'X' in str(data.get('aadhaar', '')):
+            data['aadhaar'] = self._orig_aadhaar
+
+        # Labour Codes: basic+DA must be >= 50% of gross wages
+        gross_day = (data['basic'] + data['hra'] + data['da'] +
+                     data['special_allowance'] + data['other_allowance'])
+        ok50, pct = calc.check_wage_code_50pct(data['basic'], data['da'], gross_day)
+        if not ok50:
+            if not messagebox.askyesno(
+                "Wage Code Warning",
+                f"Basic + DA is only {pct}% of gross pay.\n\n"
+                "The Labour Codes (in force since Nov 2025) require wages (Basic + DA) "
+                "to be at least 50% of total remuneration. Keeping it lower is "
+                "non-compliant and understates PF/gratuity.\n\nSave anyway?",
+                parent=self):
+                return
+
+        # UP minimum wage check (per-day rates -> monthly equivalent at 26 days)
+        ok_mw, min_w, shortfall = calc.check_minimum_wage((data['basic'] + data['da']) * 26)
+        if not ok_mw:
+            if not messagebox.askyesno(
+                "Minimum Wage Warning",
+                f"Basic + DA (~Rs {(data['basic'] + data['da']) * 26:,.0f}/month at 26 days) is below the "
+                f"UP minimum wage of Rs {min_w:,.0f}/month (unskilled) by Rs {shortfall:,.0f}.\n\nSave anyway?",
+                parent=self):
+                return
 
         try:
             if self.emp_id:

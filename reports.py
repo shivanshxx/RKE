@@ -692,6 +692,52 @@ def generate_payroll_summary(company, month_records, year, month, output_path=No
 
 
 # ================================================================
+#  PF ECR TEXT FILE (EPFO revamped ECR, || delimited, 11 fields)
+# ================================================================
+
+def generate_pf_ecr(month_records, employees_by_id, year, month, output_path=None):
+    """
+    EPFO ECR 2.0 text file for upload on the unified portal.
+    Fields: UAN||MEMBER NAME||GROSS WAGES||EPF WAGES||EPS WAGES||EDLI WAGES||
+            EPF CONTRI REMITTED||EPS CONTRI REMITTED||EPF EPS DIFF REMITTED||
+            NCP DAYS||REFUND OF ADVANCES
+    Employees without a UAN are skipped (returned in the second element).
+    """
+    if output_path is None:
+        fname = f"PF_ECR_{year}_{month:02d}.txt"
+        output_path = os.path.join(OUTPUT_DIR, fname)
+
+    lines = []
+    skipped = []
+    for r in month_records:
+        emp = employees_by_id.get(r['emp_id'], {})
+        uan = str(emp.get('uan', '') or '').strip()
+        if not uan or not int(emp.get('pf_applicable', 0)):
+            if not uan:
+                skipped.append(emp.get('name', f"emp_id {r['emp_id']}"))
+            continue
+
+        gross = round(r.get('gross_salary', 0))
+        basic_da = round(r.get('basic', 0) + r.get('da', 0))
+        epf_wages = basic_da
+        eps_wages = min(basic_da, 15000)
+        edli_wages = min(basic_da, 15000)
+        epf_contri = round(min(basic_da, 15000) * 0.12)
+        eps_contri = round(eps_wages * 0.0833)
+        diff = epf_contri - eps_contri
+        ncp_days = max(0, round((r.get('total_days', 0) or 0) - (r.get('days_worked', 0) or 0)))
+
+        name = str(emp.get('name', '')).upper().strip()
+        lines.append(f"{uan}||{name}||{gross}||{epf_wages}||{eps_wages}||{edli_wages}||"
+                     f"{epf_contri}||{eps_contri}||{diff}||{ncp_days}||0")
+
+    with open(output_path, 'w', newline='') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    return output_path, skipped
+
+
+# ================================================================
 #  ANNUAL PAYROLL REGISTER (one employee, full FY, month-by-month)
 # ================================================================
 

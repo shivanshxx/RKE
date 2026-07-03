@@ -70,8 +70,11 @@ def calculate_esi(gross_salary, esi_applicable=True, eligibility_gross=None):
     if not esi_applicable or check_gross > ESI_GROSS_LIMIT:
         return 0, 0
 
-    emp_esi = round(gross_salary * 0.0075)
-    er_esi = round(gross_salary * 0.0325)
+    # ESIC rule: contributions are rounded UP to the next higher rupee,
+    # not to the nearest rupee.
+    import math
+    emp_esi = math.ceil(gross_salary * 0.0075)
+    er_esi = math.ceil(gross_salary * 0.0325)
     return emp_esi, er_esi
 
 
@@ -100,32 +103,48 @@ def calculate_pt(gross_salary, state='Uttar Pradesh'):
 
 # ---- TDS / Income Tax ----
 
-def _new_regime_tax(income):
-    """New Tax Regime slabs FY 2025-26 (AY 2026-27)
-    Standard deduction of Rs 75,000 is available in new regime for salaried.
-    Rebate u/s 87A: up to Rs 60,000 for income up to Rs 12,00,000.
-    """
+# Fallback slabs used only if the tax_slabs DB table is empty/unavailable.
+_FALLBACK_SLABS = {
+    'new': [(0, 400000, 0.00), (400000, 800000, 0.05), (800000, 1200000, 0.10),
+            (1200000, 1600000, 0.15), (1600000, 2000000, 0.20),
+            (2000000, 2400000, 0.25), (2400000, None, 0.30)],
+    'old': [(0, 250000, 0.00), (250000, 500000, 0.05),
+            (500000, 1000000, 0.20), (1000000, None, 0.30)],
+}
+
+
+def _get_slabs(regime, fy_start):
+    """Slabs come from the database (updatable without a re-release);
+    hardcoded values are only a last-resort fallback."""
+    try:
+        import database as db
+        slabs = db.get_tax_slabs(regime, fy_start)
+        if slabs:
+            return slabs
+    except Exception:
+        pass
+    return _FALLBACK_SLABS[regime]
+
+
+def _slab_tax(taxable, slabs):
+    tax = 0.0
+    for lo, hi, rate in slabs:
+        if taxable > lo:
+            top = min(taxable, hi) if hi else taxable
+            tax += (top - lo) * rate
+    return tax
+
+
+def _new_regime_tax(income, fy_start=None):
+    """New Tax Regime. Standard deduction Rs 75,000 for salaried.
+    Rebate u/s 87A: up to Rs 60,000 for taxable income up to Rs 12,00,000."""
+    if fy_start is None:
+        fy_start = current_fy_start()
     std_deduction = 75000
     taxable = max(0, income - std_deduction)
 
-    slabs = [
-        (400000, 0.00),
-        (400000, 0.05),
-        (400000, 0.10),
-        (400000, 0.15),
-        (400000, 0.20),
-        (float('inf'), 0.30),
-    ]
-    tax = 0.0
-    remaining = taxable
-    for slab_size, rate in slabs:
-        if remaining <= 0:
-            break
-        chunk = min(remaining, slab_size)
-        tax += chunk * rate
-        remaining -= chunk
+    tax = _slab_tax(taxable, _get_slabs('new', fy_start))
 
-    # Rebate u/s 87A: full rebate (max Rs 60,000) if taxable income <= 12,00,000
     if taxable <= 1200000:
         rebate = min(tax, 60000)
         tax = max(0.0, tax - rebate)
@@ -141,25 +160,14 @@ def _new_regime_tax(income):
     return tax
 
 
-def _old_regime_tax(income, deductions_80c=0, hra_exempt=0, lta=0):
+def _old_regime_tax(income, deductions_80c=0, hra_exempt=0, lta=0, fy_start=None):
     """Old Tax Regime"""
+    if fy_start is None:
+        fy_start = current_fy_start()
     std_deduction = 50000
     taxable = max(0, income - std_deduction - deductions_80c - hra_exempt - lta)
 
-    slabs = [
-        (250000, 0.00),
-        (250000, 0.05),
-        (500000, 0.20),
-        (float('inf'), 0.30),
-    ]
-    tax = 0.0
-    remaining = taxable
-    for slab_size, rate in slabs:
-        if remaining <= 0:
-            break
-        chunk = min(remaining, slab_size)
-        tax += chunk * rate
-        remaining -= chunk
+    tax = _slab_tax(taxable, _get_slabs('old', fy_start))
 
     # Rebate u/s 87A: max Rs 12,500 if taxable <= 5,00,000
     if taxable <= 500000:
@@ -168,6 +176,13 @@ def _old_regime_tax(income, deductions_80c=0, hra_exempt=0, lta=0):
 
     tax = tax * 1.04  # 4% cess
     return tax
+
+
+def current_fy_start():
+    """FY start year for today (April-March)."""
+    from datetime import date
+    today = date.today()
+    return today.year if today.month >= 4 else today.year - 1
 
 
 def calculate_annual_tax(annual_gross, regime='new', deductions_80c=0, hra_exempt=0, lta=0):
@@ -271,6 +286,15 @@ def compute_salary(emp, total_days=26, days_worked=26, company_state='Uttar Prad
     }
 
 
+def check_wage_code_50pct(basic, da, gross):
+    """Labour Codes (in force since 21 Nov 2025): 'wages' (basic + DA) must be
+    at least 50% of total remuneration. Returns (ok, actual_pct)."""
+    if gross <= 0:
+        return True, 0.0
+    pct = (basic + da) / gross * 100
+    return pct >= 50.0, round(pct, 1)
+
+
 def check_minimum_wage(basic_da, skill_category='unskilled'):
     """Returns (ok, min_wage, shortfall)"""
     limits = {
@@ -281,6 +305,35 @@ def check_minimum_wage(basic_da, skill_category='unskilled'):
     min_w = limits.get(skill_category, UP_MIN_WAGE_UNSKILLED)
     shortfall = max(0, min_w - basic_da)
     return shortfall == 0, min_w, shortfall
+
+
+def compliance_deadlines(today=None):
+    """Statutory deadlines for last month's payroll. Returns a list of
+    (name, due_date, status) where status is 'overdue' | 'due_soon' | 'upcoming'."""
+    from datetime import date
+    today = today or date.today()
+
+    # Deadlines fall in the current month, for the previous wage month
+    prev_month = today.month - 1 or 12
+    prev_year = today.year if today.month > 1 else today.year - 1
+    label = f"{MONTH_NAMES[prev_month]} {prev_year}"
+
+    items = [
+        (f"TDS deposit — salary of {label}", date(today.year, today.month, 7)),
+        (f"PF (EPF) payment + ECR — {label}", date(today.year, today.month, 15)),
+        (f"ESI contribution — {label}", date(today.year, today.month, 15)),
+    ]
+
+    out = []
+    for name, due in items:
+        if today > due:
+            status = 'overdue'
+        elif (due - today).days <= 5:
+            status = 'due_soon'
+        else:
+            status = 'upcoming'
+        out.append((name, due, status))
+    return out
 
 
 MONTH_NAMES = {
