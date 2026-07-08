@@ -114,6 +114,32 @@ def init_db():
         UNIQUE(emp_id, year, month)
     )""")
 
+    c.execute("""CREATE TABLE IF NOT EXISTS attendance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        day INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        UNIQUE(emp_id, year, month, day),
+        FOREIGN KEY (emp_id) REFERENCES employees(id)
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS salary_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        effective_from TEXT NOT NULL,
+        basic REAL, hra REAL, da REAL,
+        special_allowance REAL, other_allowance REAL,
+        note TEXT DEFAULT '',
+        FOREIGN KEY (emp_id) REFERENCES employees(id)
+    )""")
+
+    # Migration: bonus / one-off earnings column on salary records
+    sr_cols = {row['name'] for row in c.execute("PRAGMA table_info(salary_records)").fetchall()}
+    if 'additional_earnings' not in sr_cols:
+        c.execute("ALTER TABLE salary_records ADD COLUMN additional_earnings REAL DEFAULT 0")
+
     c.execute("""CREATE TABLE IF NOT EXISTS tax_slabs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         regime TEXT NOT NULL,
@@ -200,7 +226,7 @@ def get_employee(emp_id):
 
 def add_employee(data):
     conn = get_conn()
-    conn.execute("""INSERT INTO employees
+    cur = conn.execute("""INSERT INTO employees
         (emp_code, name, father_name, dob, doj, designation, department, gender,
          pan, aadhaar, bank_name, bank_account, ifsc, pf_number, esi_number, uan,
          basic, hra, da, special_allowance, other_allowance,
@@ -214,8 +240,10 @@ def add_employee(data):
                   data['special_allowance'], data['other_allowance'],
                   data['pf_applicable'], data['esi_applicable'], data['tds_applicable'],
                   data['tax_regime'], data['status']))
+    emp_id = cur.lastrowid
     conn.commit()
     conn.close()
+    return emp_id
 
 
 def update_employee(emp_id, data):
@@ -269,12 +297,13 @@ def save_salary_record(data):
     conn = get_conn()
     existing = conn.execute("SELECT id FROM salary_records WHERE emp_id=? AND year=? AND month=?",
                             (data['emp_id'], data['year'], data['month'])).fetchone()
+    add_earn = data.get('additional_earnings', 0)
     if existing:
         conn.execute("""UPDATE salary_records SET
             total_days=?, days_worked=?, basic=?, hra=?, da=?, special_allowance=?, other_allowance=?,
             gross_salary=?, pf_employee=?, esi_employee=?, tds=?, pt=?, other_deductions=?,
             total_deductions=?, net_salary=?, pf_employer=?, esi_employer=?,
-            payment_mode=?, remarks=?, generated_on=?
+            payment_mode=?, remarks=?, generated_on=?, additional_earnings=?
             WHERE emp_id=? AND year=? AND month=?""",
                      (data['total_days'], data['days_worked'], data['basic'], data['hra'],
                       data['da'], data['special_allowance'], data['other_allowance'],
@@ -282,14 +311,15 @@ def save_salary_record(data):
                       data['tds'], data['pt'], data['other_deductions'],
                       data['total_deductions'], data['net_salary'],
                       data['pf_employer'], data['esi_employer'],
-                      data['payment_mode'], data['remarks'], data['generated_on'],
+                      data['payment_mode'], data['remarks'], data['generated_on'], add_earn,
                       data['emp_id'], data['year'], data['month']))
     else:
         conn.execute("""INSERT INTO salary_records
             (emp_id, year, month, total_days, days_worked, basic, hra, da, special_allowance,
              other_allowance, gross_salary, pf_employee, esi_employee, tds, pt, other_deductions,
-             total_deductions, net_salary, pf_employer, esi_employer, payment_mode, remarks, generated_on)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             total_deductions, net_salary, pf_employer, esi_employer, payment_mode, remarks,
+             generated_on, additional_earnings)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (data['emp_id'], data['year'], data['month'],
                       data['total_days'], data['days_worked'], data['basic'], data['hra'],
                       data['da'], data['special_allowance'], data['other_allowance'],
@@ -297,7 +327,7 @@ def save_salary_record(data):
                       data['tds'], data['pt'], data['other_deductions'],
                       data['total_deductions'], data['net_salary'],
                       data['pf_employer'], data['esi_employer'],
-                      data['payment_mode'], data['remarks'], data['generated_on']))
+                      data['payment_mode'], data['remarks'], data['generated_on'], add_earn))
     conn.commit()
     conn.close()
 
@@ -318,6 +348,77 @@ def get_annual_salary_records(emp_id, year):
     conn = get_conn()
     rows = conn.execute("""SELECT * FROM salary_records WHERE emp_id=? AND year=? ORDER BY month""",
                         (emp_id, year)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------- Attendance ----------
+
+def get_attendance(year, month):
+    """{emp_id: {day: status}} for a month. Only exceptions are stored;
+    an unmarked day counts as Present."""
+    conn = get_conn()
+    rows = conn.execute("SELECT emp_id, day, status FROM attendance WHERE year=? AND month=?",
+                        (year, month)).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault(r['emp_id'], {})[r['day']] = r['status']
+    return out
+
+
+def save_attendance(year, month, marks):
+    """marks: {emp_id: {day: status}} — replaces the month's records."""
+    conn = get_conn()
+    conn.execute("DELETE FROM attendance WHERE year=? AND month=?", (year, month))
+    for emp_id, days in marks.items():
+        for day, status in days.items():
+            conn.execute("INSERT INTO attendance (emp_id, year, month, day, status) VALUES (?,?,?,?,?)",
+                         (emp_id, year, month, day, status))
+    conn.commit()
+    conn.close()
+
+
+def attendance_days_worked(emp_id, year, month, total_days):
+    """Days worked from attendance marks: total days minus absences,
+    half-days count 0.5. Returns None if nothing is marked for this employee."""
+    conn = get_conn()
+    rows = conn.execute("SELECT status FROM attendance WHERE emp_id=? AND year=? AND month=?",
+                        (emp_id, year, month)).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    absent = sum(1 for r in rows if r['status'] == 'A')
+    half = sum(1 for r in rows if r['status'] == 'H')
+    return max(0.0, total_days - absent - 0.5 * half)
+
+
+# ---------- Salary history ----------
+
+RATE_FIELDS = ('basic', 'hra', 'da', 'special_allowance', 'other_allowance')
+
+
+def record_salary_revision(emp_id, data, note=''):
+    """Store a pay-revision snapshot if rates differ from the latest one."""
+    conn = get_conn()
+    last = conn.execute("""SELECT basic, hra, da, special_allowance, other_allowance
+                           FROM salary_history WHERE emp_id=? ORDER BY id DESC LIMIT 1""",
+                        (emp_id,)).fetchone()
+    changed = last is None or any(abs((last[f] or 0) - float(data[f] or 0)) > 0.005 for f in RATE_FIELDS)
+    if changed:
+        conn.execute("""INSERT INTO salary_history
+            (emp_id, effective_from, basic, hra, da, special_allowance, other_allowance, note)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (emp_id, datetime.now().strftime('%Y-%m-%d'),
+             data['basic'], data['hra'], data['da'],
+             data['special_allowance'], data['other_allowance'], note))
+        conn.commit()
+    conn.close()
+
+
+def get_salary_history(emp_id):
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM salary_history WHERE emp_id=? ORDER BY id DESC", (emp_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

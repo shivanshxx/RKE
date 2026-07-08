@@ -163,6 +163,8 @@ def generate_salary_slip(company, employee, salary, output_path=None):
         ('Special Allowance',  salary['special_allowance']),
         ('Other Allowance',    salary['other_allowance']),
     ]
+    if salary.get('additional_earnings'):
+        earn_items.append(('Bonus / Additional', salary['additional_earnings']))
     ded_items = [
         ('PF (Employee 12%)',  salary['pf_employee']),
         ('ESI (Employee 0.75%)', salary['esi_employee']),
@@ -180,9 +182,10 @@ def generate_salary_slip(company, employee, salary, output_path=None):
         rows.append([_para(ec, s['Normal']), _para(ea_str, s['Right']),
                      '', _para(dc, s['Normal']), _para(da_str, s['Right'])])
 
-    # Totals row
-    rows.append([_para('Gross Salary', s['Bold']),
-                 _para(f"{salary['gross_salary']:,.2f}", s['Right']),
+    # Totals row (earnings total includes any bonus/additional pay)
+    total_earnings = salary['gross_salary'] + (salary.get('additional_earnings') or 0)
+    rows.append([_para('Total Earnings', s['Bold']),
+                 _para(f"{total_earnings:,.2f}", s['Right']),
                  '',
                  _para('Total Deductions', s['Bold']),
                  _para(f"{salary['total_deductions']:,.2f}", s['Right'])])
@@ -686,6 +689,78 @@ def generate_payroll_summary(company, month_records, year, month, output_path=No
         ('LEFTPADDING', (0,0), (-1,-1), 4),
     ]))
     story.append(tbl)
+
+    doc.build(story)
+    return output_path
+
+
+# ================================================================
+#  FULL & FINAL SETTLEMENT STATEMENT
+# ================================================================
+
+def generate_fnf_statement(company, employee, v, output_path=None):
+    """v: dict from FnFDialog._values()"""
+    if output_path is None:
+        fname = f"FnF_{employee['emp_code']}_{v['last_working_date']}.pdf"
+        output_path = os.path.join(OUTPUT_DIR, fname)
+
+    doc = SimpleDocTemplate(output_path, pagesize=A4,
+                            leftMargin=15*mm, rightMargin=15*mm,
+                            topMargin=15*mm, bottomMargin=15*mm)
+    s = _styles()
+    story = []
+
+    story.append(_section_header(
+        f"{company.get('name','Ram Krishna Enterprises')} — Full & Final Settlement",
+        ParagraphStyle('sh4', fontSize=12, fontName='Helvetica-Bold', textColor=WHITE, alignment=TA_CENTER)))
+    story.append(Spacer(1, 5*mm))
+
+    emp_tbl = Table([
+        [_para('Employee', s['Bold']), _para(f"{employee['name']} ({employee['emp_code']})", s['Normal'])],
+        [_para('Designation', s['Bold']), _para(employee.get('designation', ''), s['Normal'])],
+        [_para('Date of Joining', s['Bold']), _para(employee.get('doj', ''), s['Normal'])],
+        [_para('Last Working Date', s['Bold']), _para(v['last_working_date'], s['Normal'])],
+    ], colWidths=[45*mm, 120*mm])
+    emp_tbl.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CCCCCC")),
+        ('BACKGROUND', (0,0), (0,-1), LIGHT_BLUE),
+        ('TOPPADDING', (0,0), (-1,-1), 4), ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+    ]))
+    story.append(emp_tbl)
+    story.append(Spacer(1, 6*mm))
+
+    grat_desc = (f"Gratuity ({v['years']} completed years of service)" if v['eligible']
+                 else "Gratuity — not eligible (service under 5 years)")
+    rows = [
+        [_para('Component', s['Bold']), _para('Amount (Rs)', s['Bold'])],
+        [_para(grat_desc, s['Normal']), _para(f"{v['gratuity']:,.2f}", s['Right'])],
+        [_para(f"Pending salary ({v['pending_days']:g} days)", s['Normal']),
+         _para(f"{v['pending_amount']:,.2f}", s['Right'])],
+        [_para(f"Leave encashment ({v['leave_days']:g} days)", s['Normal']),
+         _para(f"{v['leave_amount']:,.2f}", s['Right'])],
+        [_para('Other dues', s['Normal']), _para(f"{v['other_dues']:,.2f}", s['Right'])],
+        [_para('Less: deductions / recoveries', s['Normal']), _para(f"({v['deductions']:,.2f})", s['Right'])],
+        [_para('NET SETTLEMENT PAYABLE', s['Bold']), _para(f"{v['total']:,.2f}", s['Right'])],
+    ]
+    tbl = Table(rows, colWidths=[120*mm, 45*mm])
+    tbl.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CCCCCC")),
+        ('BACKGROUND', (0,0), (-1,0), MID_BLUE),
+        ('BACKGROUND', (0,-1), (-1,-1), LIGHT_BLUE),
+        ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+        ('TOPPADDING', (0,0), (-1,-1), 5), ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 6*mm))
+    story.append(_para(f"Amount in words: {calc.amount_to_words(v['total'])}", s['Bold']))
+    story.append(Spacer(1, 18*mm))
+
+    sig = Table([[_para('Employee Signature', s['Center']), _para('Authorised Signatory', s['Center'])]],
+                colWidths=[82*mm, 82*mm])
+    sig.setStyle(TableStyle([('TOPPADDING', (0,0), (-1,-1), 20),
+                             ('LINEABOVE', (0,0), (0,0), 0.5, BLACK),
+                             ('LINEABOVE', (1,0), (1,0), 0.5, BLACK)]))
+    story.append(sig)
 
     doc.build(story)
     return output_path

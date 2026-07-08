@@ -307,6 +307,54 @@ def check_minimum_wage(basic_da, skill_category='unskilled'):
     return shortfall == 0, min_w, shortfall
 
 
+def apply_extras(sal, additional_earnings=0, other_deductions=0):
+    """Apply one-off earnings (bonus/overtime) and deductions (fine/advance
+    recovery) to a computed salary dict, recomputing totals and net."""
+    sal['additional_earnings'] = round(additional_earnings or 0, 2)
+    sal['other_deductions'] = round(other_deductions or 0, 2)
+    sal['total_deductions'] = round(sal['pf_employee'] + sal['esi_employee'] +
+                                    sal['tds'] + sal['pt'] + sal['other_deductions'], 2)
+    sal['net_salary'] = round(sal['gross_salary'] + sal['additional_earnings'] -
+                              sal['total_deductions'], 2)
+    return sal
+
+
+def calculate_gratuity(doj_str, last_day_str, per_day_basic_da):
+    """
+    Payment of Gratuity Act 1972: eligible after 5 years of continuous service.
+    Gratuity = (15/26) x last drawn monthly wage (Basic+DA) x completed years.
+    A final partial year over 6 months rounds up to a full year.
+    Returns (eligible, years_counted, amount).
+    """
+    from datetime import datetime as _dt
+    try:
+        doj = _dt.strptime(doj_str.strip(), '%Y-%m-%d')
+    except (ValueError, AttributeError):
+        try:
+            doj = _dt.strptime(doj_str.strip(), '%d-%m-%Y')
+        except (ValueError, AttributeError):
+            return False, 0, 0.0
+    try:
+        end = _dt.strptime(last_day_str.strip(), '%Y-%m-%d')
+    except (ValueError, AttributeError):
+        try:
+            end = _dt.strptime(last_day_str.strip(), '%d-%m-%Y')
+        except (ValueError, AttributeError):
+            return False, 0, 0.0
+
+    days = (end - doj).days
+    if days < 5 * 365:
+        return False, 0, 0.0
+
+    full_years = days // 365
+    rem_days = days - full_years * 365
+    years = int(full_years + (1 if rem_days > 182 else 0))
+
+    monthly_wage = per_day_basic_da * 26  # standard monthly wage basis
+    amount = round((15 / 26) * monthly_wage * years, 2)
+    return True, years, amount
+
+
 def compliance_deadlines(today=None):
     """Statutory deadlines for last month's payroll. Returns a list of
     (name, due_date, status) where status is 'overdue' | 'due_soon' | 'upcoming'."""

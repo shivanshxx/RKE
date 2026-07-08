@@ -15,7 +15,7 @@ import calculations as calc
 import reports
 import update_checker
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -166,6 +166,7 @@ class PayrollApp(tk.Tk):
         nav_items = [
             ("🏠  Dashboard",        self.show_dashboard),
             ("👥  Employees",         self.show_employees),
+            ("📆  Attendance",        self.show_attendance),
             ("💰  Process Salary",    self.show_salary_processing),
             ("📄  Salary Slips",      self.show_salary_slips),
             ("📋  Form 16",           self.show_form16),
@@ -368,6 +369,8 @@ class PayrollApp(tk.Tk):
         self.emp_tree.bind('<Double-1>', lambda e: self._edit_selected_employee())
         ctx = tk.Menu(self, tearoff=0)
         ctx.add_command(label="✏️ Edit Employee", command=self._edit_selected_employee)
+        ctx.add_command(label="📜 Pay Revision History", command=self._pay_history_selected)
+        ctx.add_command(label="🧾 Full & Final Settlement", command=self._fnf_selected)
         ctx.add_command(label="🗑 Deactivate",    command=self._deactivate_employee)
         self.emp_tree.bind('<Button-3>', lambda e: ctx.post(e.x_root, e.y_root))
 
@@ -402,6 +405,166 @@ class PayrollApp(tk.Tk):
         if sel and messagebox.askyesno("Confirm", "Deactivate this employee?"):
             db.delete_employee(int(sel))
             self.show_employees()
+
+    def _pay_history_selected(self):
+        sel = self.emp_tree.focus()
+        if not sel:
+            return
+        emp = db.get_employee(int(sel))
+        hist = db.get_salary_history(int(sel))
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Pay Revision History — {emp['name']}")
+        dlg.geometry("640x360")
+        dlg.configure(bg=C_BG)
+        cols = ('From', 'Basic/day', 'HRA/day', 'DA/day', 'Special/day', 'Other/day', 'Gross/day')
+        tree = ttk.Treeview(dlg, columns=cols, show='headings')
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=85, anchor='center')
+        for h in hist:
+            gross = (h['basic'] or 0) + (h['hra'] or 0) + (h['da'] or 0) +                     (h['special_allowance'] or 0) + (h['other_allowance'] or 0)
+            tree.insert('', 'end', values=(h['effective_from'], f"{h['basic']:,.2f}",
+                                           f"{h['hra']:,.2f}", f"{h['da']:,.2f}",
+                                           f"{h['special_allowance']:,.2f}",
+                                           f"{h['other_allowance']:,.2f}", f"{gross:,.2f}"))
+        tree.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        stripe_rows(tree)
+        if not hist:
+            tk.Label(dlg, text="No revisions recorded yet — history starts when you next save this employee.",
+                     font=("Segoe UI", 9), bg=C_BG, fg=C_MUTED).pack(pady=(0, 10))
+
+    def _fnf_selected(self):
+        sel = self.emp_tree.focus()
+        if not sel:
+            return
+        FnFDialog(self, int(sel))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  ATTENDANCE (simple exception-based: unmarked = Present)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def show_attendance(self):
+        self._clear_content()
+        self._set_active_nav("📆  Attendance")
+        self._page_header("Attendance", "Click a day to mark: Absent → Half-day → Present. Unmarked = Present.")
+
+        ctrl = tk.Frame(self.content, bg=C_BG)
+        ctrl.pack(fill=tk.X, padx=20, pady=12)
+
+        tk.Label(ctrl, text="Month:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
+        self._att_month = tk.IntVar(value=CURRENT_MONTH)
+        ttk.Combobox(ctrl, textvariable=self._att_month, state='readonly',
+                     values=[m for m, _ in MONTHS], width=5).pack(side=tk.LEFT, padx=(4, 15))
+        tk.Label(ctrl, text="Year:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
+        self._att_year = tk.IntVar(value=CURRENT_YEAR)
+        ttk.Spinbox(ctrl, from_=2020, to=2035, textvariable=self._att_year, width=7).pack(side=tk.LEFT, padx=(4, 15))
+        tk.Button(ctrl, text="Load", font=("Segoe UI", 10), bg=C_HEADER, fg=C_WHITE,
+                  bd=0, padx=14, pady=6, cursor='hand2',
+                  command=self._load_attendance_grid).pack(side=tk.LEFT, padx=4)
+        tk.Button(ctrl, text="💾 Save Attendance", font=("Segoe UI", 10, "bold"),
+                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=14, pady=6, cursor='hand2',
+                  command=self._save_attendance).pack(side=tk.LEFT, padx=4)
+
+        # Legend
+        legend = tk.Frame(ctrl, bg=C_BG)
+        legend.pack(side=tk.RIGHT)
+        for text, color in (("Present", "#D1FAE5"), ("Half-day", "#FEF3C7"), ("Absent", "#FEE2E2")):
+            tk.Label(legend, text="  " + text + "  ", font=("Segoe UI", 9), bg=color,
+                     fg=C_DARK).pack(side=tk.LEFT, padx=3)
+
+        # Scrollable grid
+        wrap = tk.Frame(self.content, bg=C_WHITE, highlightbackground=C_BORDER, highlightthickness=1)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 12))
+        canvas = tk.Canvas(wrap, bg=C_WHITE, highlightthickness=0)
+        vsb = ttk.Scrollbar(wrap, orient='vertical', command=canvas.yview)
+        hsb = ttk.Scrollbar(wrap, orient='horizontal', command=canvas.xview)
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.pack(fill=tk.BOTH, expand=True)
+        self._att_grid_frame = tk.Frame(canvas, bg=C_WHITE)
+        canvas.create_window((0, 0), window=self._att_grid_frame, anchor='nw')
+        self._att_grid_frame.bind('<Configure>',
+                                   lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<MouseWheel>', lambda e: canvas.yview_scroll(-1 * (e.delta // 120), 'units'))
+
+        self._load_attendance_grid()
+
+    def _load_attendance_grid(self):
+        import calendar as _cal
+        for w in self._att_grid_frame.winfo_children():
+            w.destroy()
+
+        year, month = self._att_year.get(), self._att_month.get()
+        ndays = _cal.monthrange(year, month)[1]
+        employees = db.get_all_employees()
+        saved = db.get_attendance(year, month)
+        # marks kept in memory until saved: {emp_id: {day: 'A'|'H'}}
+        self._att_marks = {e['id']: dict(saved.get(e['id'], {})) for e in employees}
+        self._att_cells = {}
+
+        hdr_bg = "#F9FAFB"
+        tk.Label(self._att_grid_frame, text="Employee", font=("Segoe UI", 9, "bold"),
+                 bg=hdr_bg, fg=C_MUTED, width=20, anchor='w', padx=8).grid(row=0, column=0, sticky='nsew')
+        for d in range(1, ndays + 1):
+            wd = _cal.weekday(year, month, d)
+            fg = C_RED if wd == 6 else C_MUTED
+            tk.Label(self._att_grid_frame, text=str(d), font=("Segoe UI", 8, "bold"),
+                     bg=hdr_bg, fg=fg, width=3).grid(row=0, column=d, sticky='nsew')
+        tk.Label(self._att_grid_frame, text="Worked", font=("Segoe UI", 9, "bold"),
+                 bg=hdr_bg, fg=C_MUTED, width=8).grid(row=0, column=ndays + 1, sticky='nsew')
+
+        colors = {'': "#D1FAE5", 'H': "#FEF3C7", 'A': "#FEE2E2"}
+        texts = {'': "P", 'H': "½", 'A': "A"}
+
+        for r, emp in enumerate(employees, start=1):
+            row_bg = C_WHITE if r % 2 else "#F9FAFB"
+            tk.Label(self._att_grid_frame, text=emp['name'][:22], font=("Segoe UI", 9),
+                     bg=row_bg, anchor='w', padx=8).grid(row=r, column=0, sticky='nsew')
+            for d in range(1, ndays + 1):
+                status = self._att_marks[emp['id']].get(d, '')
+                cell = tk.Label(self._att_grid_frame, text=texts[status], width=3,
+                                font=("Segoe UI", 8), bg=colors[status], fg=C_DARK,
+                                bd=1, relief=tk.FLAT, cursor='hand2')
+                cell.grid(row=r, column=d, sticky='nsew', padx=1, pady=1)
+                cell.bind('<Button-1>', lambda e, eid=emp['id'], day=d: self._cycle_attendance(eid, day))
+                self._att_cells[(emp['id'], d)] = cell
+            total_lbl = tk.Label(self._att_grid_frame, text="", font=("Segoe UI", 9, "bold"),
+                                 bg=row_bg, fg=C_DARK)
+            total_lbl.grid(row=r, column=ndays + 1, sticky='nsew')
+            self._att_cells[(emp['id'], 'total')] = total_lbl
+            self._update_att_total(emp['id'], ndays)
+
+    def _cycle_attendance(self, emp_id, day):
+        import calendar as _cal
+        cur = self._att_marks[emp_id].get(day, '')
+        nxt = {'': 'A', 'A': 'H', 'H': ''}[cur]
+        if nxt:
+            self._att_marks[emp_id][day] = nxt
+        else:
+            self._att_marks[emp_id].pop(day, None)
+        colors = {'': "#D1FAE5", 'H': "#FEF3C7", 'A': "#FEE2E2"}
+        texts = {'': "P", 'H': "½", 'A': "A"}
+        cell = self._att_cells[(emp_id, day)]
+        cell.config(text=texts[nxt], bg=colors[nxt])
+        ndays = _cal.monthrange(self._att_year.get(), self._att_month.get())[1]
+        self._update_att_total(emp_id, ndays)
+
+    def _update_att_total(self, emp_id, ndays):
+        marks = self._att_marks[emp_id]
+        worked = ndays - sum(1 for s in marks.values() if s == 'A') \
+                 - 0.5 * sum(1 for s in marks.values() if s == 'H')
+        lbl = self._att_cells.get((emp_id, 'total'))
+        if lbl:
+            lbl.config(text=f"{worked:g}")
+
+    def _save_attendance(self):
+        year, month = self._att_year.get(), self._att_month.get()
+        db.save_attendance(year, month, self._att_marks)
+        marked = sum(len(v) for v in self._att_marks.values())
+        messagebox.showinfo("Saved", f"Attendance saved for {calc.MONTH_NAMES[month]} {year} "
+                                     f"({marked} exception mark(s)).\n\n"
+                                     "Process Salary will now use these day counts automatically.")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  SALARY PROCESSING
@@ -504,14 +667,24 @@ class PayrollApp(tk.Tk):
         self._calculated_salaries = {}
 
         for emp in employees:
-            # Check if record already exists — use saved days_worked (actual attendance)
+            # Days worked priority: attendance grid > previously saved record > default spinner
             existing = db.get_salary_record(emp['id'], year, month)
-            dworked  = existing['days_worked'] if existing else float(default_present)
+            att_days = db.attendance_days_worked(emp['id'], year, month, wdays)
+            if att_days is not None:
+                dworked = att_days
+            elif existing:
+                dworked = existing['days_worked']
+            else:
+                dworked = float(default_present)
             ytd_gross, ytd_tds = db.get_ytd_totals(emp['id'], year, month)
 
             sal = calc.compute_salary(emp, wdays, dworked, company_state=company_state,
                                        ytd_gross=ytd_gross, ytd_tds=ytd_tds,
                                        months_remaining=months_remaining)
+            # Preserve any bonus / one-off deduction already saved for this month
+            calc.apply_extras(sal,
+                              additional_earnings=(existing['additional_earnings'] if existing else 0) or 0,
+                              other_deductions=(existing['other_deductions'] if existing else 0) or 0)
             sal.update({'emp_id': emp['id'], 'year': year, 'month': month,
                         'total_days': wdays, 'days_worked': dworked,
                         'payment_mode': 'Bank Transfer', 'remarks': '',
@@ -799,6 +972,8 @@ class PayrollApp(tk.Tk):
              self._report_pf_esi),
             ("📤 PF ECR File (EPFO Upload)", "Generate the ||-delimited ECR text file for the EPFO unified portal",
              self._report_pf_ecr),
+            ("🏧 Bank Advice (Salary Transfer)", "CSV sheet of account numbers, IFSC and net pay — hand to your bank for disbursement",
+             self._report_bank_advice),
         ]
 
         for title, desc, cmd in report_items:
@@ -895,6 +1070,43 @@ class PayrollApp(tk.Tk):
             msg += "\n\n⚠️ Skipped (no UAN on record):\n" + "\n".join(skipped)
         messagebox.showinfo("ECR Generated", msg)
         os.startfile(reports.OUTPUT_DIR)
+
+    def _report_bank_advice(self):
+        month, year = CURRENT_MONTH, CURRENT_YEAR
+        records = db.get_monthly_salaries(year, month)
+        if not records:
+            month = month - 1 or 12
+            year = year if CURRENT_MONTH > 1 else year - 1
+            records = db.get_monthly_salaries(year, month)
+        if not records:
+            messagebox.showwarning("No Data", "No processed salary records found for this or last month.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save Bank Advice", defaultextension=".csv",
+            initialfile=f"BankAdvice_{year}_{month:02d}.csv",
+            filetypes=[("CSV (opens in Excel)", "*.csv")])
+        if not path:
+            return
+        import csv
+        missing = []
+        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.writer(f)
+            w.writerow(["Sr", "Employee Code", "Name", "Bank", "Account Number", "IFSC", "Net Pay (Rs)"])
+            total = 0
+            for i, r in enumerate(records, 1):
+                emp = db.get_employee(r['emp_id'])
+                if not emp.get('bank_account'):
+                    missing.append(emp['name'])
+                w.writerow([i, r.get('emp_code', ''), r.get('name', ''),
+                            emp.get('bank_name', ''), emp.get('bank_account', ''),
+                            emp.get('ifsc', ''), f"{r['net_salary']:.2f}"])
+                total += r['net_salary']
+            w.writerow([])
+            w.writerow(["", "", "", "", "", "TOTAL", f"{total:.2f}"])
+        msg = f"Bank advice for {calc.MONTH_NAMES[month]} {year} saved to:\n{path}"
+        if missing:
+            msg += "\n\n⚠️ Missing bank account for:\n" + "\n".join(missing)
+        messagebox.showinfo("Exported", msg)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  SETTINGS
@@ -1261,9 +1473,11 @@ class EmployeeForm(tk.Toplevel):
         try:
             if self.emp_id:
                 db.update_employee(self.emp_id, data)
+                db.record_salary_revision(self.emp_id, data)
                 messagebox.showinfo("Saved", "Employee updated successfully.", parent=self)
             else:
-                db.add_employee(data)
+                new_id = db.add_employee(data)
+                db.record_salary_revision(new_id, data, note='Initial pay')
                 messagebox.showinfo("Saved", "Employee added successfully.", parent=self)
             if self.callback:
                 self.callback()
@@ -1288,7 +1502,7 @@ class SalaryEditDialog(tk.Toplevel):
 
         emp = db.get_employee(emp_id)
         self.title(f"Edit Salary — {emp['name']} — {calc.MONTH_NAMES[month]} {year}")
-        self.geometry("480x380")
+        self.geometry("480x430")
         self.configure(bg=C_BG)
         self.grab_set()
 
@@ -1307,18 +1521,20 @@ class SalaryEditDialog(tk.Toplevel):
 
         self._wdays  = row("Working Days in Month",  'total_days',       total_days, row_n=0)
         self._dwork  = row("Days Actually Worked",   'days_worked',      float(total_days), row_n=1)
-        self._oth_ded = row("Other Deductions (₹)",  'other_deductions', 0, row_n=2)
-        self._pmmode  = row("Payment Mode",          'payment_mode',     'Bank Transfer', row_n=3)
-        self._rem     = row("Remarks",               'remarks',          '', row_n=4)
+        self._bonus  = row("Bonus / Overtime (₹)",   'additional_earnings', 0, row_n=2)
+        self._oth_ded = row("Other Deductions (₹)",  'other_deductions', 0, row_n=3)
+        self._pmmode  = row("Payment Mode",          'payment_mode',     'Bank Transfer', row_n=4)
+        self._rem     = row("Remarks",               'remarks',          '', row_n=5)
 
         tk.Button(frame, text="💾 Recalculate & Save", font=("Segoe UI", 10, "bold"),
                   bg=C_GREEN, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
-                  command=self._save).grid(row=5, column=0, columnspan=2, pady=20)
+                  command=self._save).grid(row=6, column=0, columnspan=2, pady=20)
 
     def _save(self):
         try:
             wdays  = int(self._wdays.get())
             dwork  = float(self._dwork.get())
+            bonus  = float(self._bonus.get())
             oth    = float(self._oth_ded.get())
             mode   = self._pmmode.get()
             rem    = self._rem.get()
@@ -1333,9 +1549,7 @@ class SalaryEditDialog(tk.Toplevel):
         sal = calc.compute_salary(emp, wdays, dwork, company_state=company_state,
                                    ytd_gross=ytd_gross, ytd_tds=ytd_tds,
                                    months_remaining=months_remaining)
-        sal['other_deductions']  = oth
-        sal['total_deductions'] += oth
-        sal['net_salary']        = round(sal['gross_salary'] - sal['total_deductions'], 2)
+        calc.apply_extras(sal, additional_earnings=bonus, other_deductions=oth)
         sal.update({'emp_id': self.emp_id, 'year': self.year, 'month': self.month,
                     'total_days': wdays, 'days_worked': dwork,
                     'payment_mode': mode, 'remarks': rem,
@@ -1345,6 +1559,115 @@ class SalaryEditDialog(tk.Toplevel):
         if self.callback:
             self.callback()
         self.destroy()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FULL & FINAL SETTLEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class FnFDialog(tk.Toplevel):
+    """Exit settlement: gratuity + pending salary days + leave encashment - deductions."""
+    def __init__(self, parent, emp_id):
+        super().__init__(parent)
+        self.emp_id = emp_id
+        self.emp = db.get_employee(emp_id)
+        self.title(f"Full & Final Settlement — {self.emp['name']}")
+        self.geometry("520x520")
+        self.configure(bg=C_BG)
+        self.grab_set()
+
+        frame = tk.Frame(self, bg=C_BG, padx=25, pady=18)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        per_day_gross = (self.emp['basic'] + self.emp['hra'] + self.emp['da'] +
+                         self.emp['special_allowance'] + self.emp['other_allowance'])
+        per_day_basic_da = self.emp['basic'] + self.emp['da']
+
+        tk.Label(frame, text=f"Date of Joining: {self.emp.get('doj') or '—'}     "
+                             f"Per-day wage (Basic+DA): ₹{per_day_basic_da:,.2f}",
+                 font=("Segoe UI", 9), bg=C_BG, fg=C_MUTED).grid(row=0, column=0, columnspan=2, pady=(0, 10), sticky='w')
+
+        def row(lbl, default, row_n):
+            tk.Label(frame, text=lbl, font=("Segoe UI", 10, "bold"), bg=C_BG,
+                     width=26, anchor='e').grid(row=row_n, column=0, sticky='e', padx=8, pady=7)
+            var = tk.StringVar(value=str(default))
+            tk.Entry(frame, textvariable=var, width=16, font=("Segoe UI", 10)).grid(
+                row=row_n, column=1, sticky='w', pady=7)
+            return var
+
+        self._lwd    = row("Last Working Date (YYYY-MM-DD)", datetime.now().strftime('%Y-%m-%d'), 1)
+        self._pend_d = row("Unpaid Salary Days", 0, 2)
+        self._leave_d = row("Leave Encashment Days", 0, 3)
+        self._other  = row("Other Dues (₹)", 0, 4)
+        self._deduct = row("Deductions / Recoveries (₹)", 0, 5)
+
+        self._result = tk.Label(frame, text="", font=("Segoe UI", 10), bg=C_WHITE,
+                                fg=C_DARK, justify=tk.LEFT, anchor='w', padx=12, pady=10,
+                                highlightbackground=C_BORDER, highlightthickness=1)
+        self._result.grid(row=6, column=0, columnspan=2, sticky='ew', pady=(12, 4))
+
+        btns = tk.Frame(frame, bg=C_BG)
+        btns.grid(row=7, column=0, columnspan=2, pady=12)
+        tk.Button(btns, text="🔢 Calculate", font=("Segoe UI", 10, "bold"),
+                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
+                  command=self._calc).pack(side=tk.LEFT, padx=6)
+        tk.Button(btns, text="📄 Generate Settlement PDF", font=("Segoe UI", 10, "bold"),
+                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
+                  command=self._generate).pack(side=tk.LEFT, padx=6)
+
+        self._calc()
+
+    def _values(self):
+        per_day_gross = (self.emp['basic'] + self.emp['hra'] + self.emp['da'] +
+                         self.emp['special_allowance'] + self.emp['other_allowance'])
+        per_day_basic_da = self.emp['basic'] + self.emp['da']
+        try:
+            lwd = self._lwd.get().strip()
+            pend_d = float(self._pend_d.get() or 0)
+            leave_d = float(self._leave_d.get() or 0)
+            other = float(self._other.get() or 0)
+            deduct = float(self._deduct.get() or 0)
+        except ValueError:
+            raise ValueError("Invalid numeric value.")
+
+        eligible, years, gratuity = calc.calculate_gratuity(self.emp.get('doj', ''), lwd, per_day_basic_da)
+        pending = round(per_day_gross * pend_d, 2)
+        leave_enc = round(per_day_basic_da * leave_d, 2)
+        total = round(gratuity + pending + leave_enc + other - deduct, 2)
+        return {
+            'last_working_date': lwd, 'eligible': eligible, 'years': years,
+            'gratuity': gratuity, 'pending_days': pend_d, 'pending_amount': pending,
+            'leave_days': leave_d, 'leave_amount': leave_enc,
+            'other_dues': other, 'deductions': deduct, 'total': total,
+        }
+
+    def _calc(self):
+        try:
+            v = self._values()
+        except ValueError as ex:
+            messagebox.showerror("Error", str(ex), parent=self)
+            return None
+        grat_line = (f"Gratuity ({v['years']} yrs): ₹{v['gratuity']:,.2f}" if v['eligible']
+                     else "Gratuity: Not eligible (under 5 years of service)")
+        lines = [
+            grat_line,
+            f"Pending salary ({v['pending_days']:g} days): ₹{v['pending_amount']:,.2f}",
+            f"Leave encashment ({v['leave_days']:g} days): ₹{v['leave_amount']:,.2f}",
+            f"Other dues: ₹{v['other_dues']:,.2f}    Deductions: −₹{v['deductions']:,.2f}",
+            "─────────────────────────────",
+            f"NET SETTLEMENT: ₹{v['total']:,.2f}",
+        ]
+        self._result.config(text="\n".join(lines))
+        return v
+
+    def _generate(self):
+        v = self._calc()
+        if v is None:
+            return
+        company = db.get_company()
+        path = reports.generate_fnf_statement(company, self.emp, v)
+        messagebox.showinfo("Generated", "Settlement statement saved to:\n" + path, parent=self)
+        os.startfile(path)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
