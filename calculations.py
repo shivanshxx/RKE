@@ -12,8 +12,10 @@ UP_MIN_WAGE_UNSKILLED = 10000   # per month
 UP_MIN_WAGE_SEMI_SKILLED = 11000
 UP_MIN_WAGE_SKILLED = 13000
 
-# PF wage ceiling per EPFO circular
-PF_WAGE_CEILING = 15000
+# EPS (pension) wage ceiling per EPFO — applies ONLY to the pension split
+# within the employer share. PF itself is computed on FULL Basic+DA
+# (no ceiling), per this company's policy of contributing on actual wages.
+EPS_WAGE_CEILING = 15000
 
 # ESI gross salary limit
 ESI_GROSS_LIMIT = 21000
@@ -39,22 +41,22 @@ def calendar_days_in_month(year, month):
     return calendar.monthrange(year, month)[1]
 
 
-def calculate_pf(basic_da, pf_applicable=True, voluntary_higher=False):
+def calculate_pf(basic_da, pf_applicable=True):
     """
-    Employee PF : 12% of Basic+DA (capped at PF_WAGE_CEILING unless voluntary higher)
-    Employer PF : 12% of Basic+DA
-        -> 3.67% goes to EPF
-        -> 8.33% goes to EPS (capped at 1250/month = 8.33% of 15000)
+    PF on FULL Basic+DA — no wage ceiling.
+    Employee : 12% of Basic+DA
+    Employer : 12% of Basic+DA, split as:
+        -> EPS (pension) 8.33% of wages CAPPED at 15,000 (statutory hard cap;
+           EPFO rejects ECR files that exceed it)
+        -> EPF = remainder of the employer 12%
     """
     if not pf_applicable:
         return 0, 0, 0, 0
 
-    pf_wage = basic_da if voluntary_higher else min(basic_da, PF_WAGE_CEILING)
-
-    emp_pf = round(pf_wage * 0.12)
-    er_epf = round(pf_wage * 0.0367)
-    er_eps = round(min(pf_wage, 15000) * 0.0833)   # EPS always capped at 15000
-    er_total = er_epf + er_eps
+    emp_pf = round(basic_da * 0.12)
+    er_total = round(basic_da * 0.12)
+    er_eps = round(min(basic_da, EPS_WAGE_CEILING) * 0.0833)
+    er_epf = er_total - er_eps
     return emp_pf, er_total, er_epf, er_eps
 
 

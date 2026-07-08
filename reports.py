@@ -914,9 +914,11 @@ def generate_pf_ecr(month_records, employees_by_id, year, month, output_path=Non
         gross = round(r.get('gross_salary', 0))
         basic_da = round(r.get('basic', 0) + r.get('da', 0))
         epf_wages = basic_da
+        # EPF on full wages (no ceiling, company contributes on actual Basic+DA);
+        # EPS and EDLI wages remain statutorily capped at 15,000 — EPFO rejects higher.
         eps_wages = min(basic_da, 15000)
         edli_wages = min(basic_da, 15000)
-        epf_contri = round(min(basic_da, 15000) * 0.12)
+        epf_contri = round(basic_da * 0.12)
         eps_contri = round(eps_wages * 0.0833)
         diff = epf_contri - eps_contri
         ncp_days = max(0, round((r.get('total_days', 0) or 0) - (r.get('days_worked', 0) or 0)))

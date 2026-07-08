@@ -23,7 +23,7 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -311,8 +311,8 @@ class PayrollApp(tb.Window):
         tk.Label(notice, text="ℹ️  Statutory Rates Applied",
                  font=("Segoe UI", 10, "bold"), bg="#FFF3CD", fg="#856404").pack(anchor='w')
         notes = [
-            "• PF Employee 12% | Employer 12% of Basic+DA (wage ceiling ₹15,000 per EPFO)",
-            "• ESI Employee 0.75% | Employer 3.25% of Gross (applicable if Gross ≤ ₹21,000)",
+            "• PF Employee 12% | Employer 12% of FULL Basic+DA — no wage ceiling (EPS split capped at ₹15,000 by EPFO)",
+            "• ESI Employee 0.75% | Employer 3.25% of full Gross (coverage if monthly Gross ≤ ₹21,000)",
             "• TDS as per Income Tax slabs (New/Old Regime) | Standard deduction included",
             "• Professional Tax (PT): Uttar Pradesh does NOT levy PT — PT = ₹0",
             "• Shram Sahinta (UP Minimum Wages): Unskilled ₹10,000 | Semi-Skilled ₹11,000 | Skilled ₹13,000",
