@@ -15,30 +15,35 @@ import calculations as calc
 import reports
 import update_checker
 import ttkbootstrap as tb
+from ttkbootstrap.themes import standard as _tb_themes
 
-UI_THEME = "cosmo"
+UI_THEME = "sandstone"
+# Warm the sandstone theme: copper primary, warm taupe info (replaces cool blues)
+_tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
+_tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
+_tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
 
 # ── Global palette (modern flat theme) ────────────────────────────────────────
-C_SIDEBAR   = "#111827"   # slate-900 — sidebar
-C_SIDEBAR_H = "#1F2937"   # slate-800 — sidebar hover
-C_ACTIVE    = "#F59E0B"   # amber-500 — active nav highlight
-C_BG        = "#F3F4F6"   # gray-100 — app background
-C_WHITE     = "#FFFFFF"
-C_DARK      = "#111827"   # near-black text
-C_GREEN     = "#059669"   # emerald-600 — success / primary actions
-C_RED       = "#DC2626"   # red-600 — destructive actions
-C_HEADER    = "#4F46E5"   # indigo-600 — accents, section bars, info buttons
-C_BORDER    = "#E5E7EB"   # gray-200 — card borders
-C_MUTED     = "#6B7280"   # gray-500 — secondary text
+C_SIDEBAR   = "#2E2620"   # warm dark brown — sidebar
+C_SIDEBAR_H = "#3E332A"   # warm brown — sidebar hover
+C_ACTIVE    = "#E8A33D"   # warm amber — active nav highlight
+C_BG        = "#FAF6EF"   # warm cream — app background
+C_WHITE     = "#FFFDF8"   # warm white — cards
+C_DARK      = "#2E2620"   # warm near-black text
+C_GREEN     = "#4E7A3A"   # olive green — success
+C_RED       = "#C0533B"   # terracotta — destructive actions
+C_HEADER    = "#B5713F"   # warm copper — accents, section bars
+C_BORDER    = "#EAE0D0"   # warm sand — card borders
+C_MUTED     = "#8A7B6C"   # warm taupe — secondary text
 
 def stripe_rows(tree):
     """Apply alternating row backgrounds to a Treeview (call after filling it)."""
-    tree.tag_configure('odd', background="#F9FAFB")
+    tree.tag_configure('odd', background="#F7F1E8")
     tree.tag_configure('even', background=C_WHITE)
     for i, iid in enumerate(tree.get_children()):
         tree.item(iid, tags=('odd' if i % 2 else 'even',))
@@ -125,7 +130,7 @@ class PayrollApp(tb.Window):
                         background=C_WHITE, fieldbackground=C_WHITE,
                         foreground=C_DARK, borderwidth=0)
         style.configure('Treeview.Heading', font=("Segoe UI", 10, "bold"),
-                        background="#F9FAFB", foreground=C_MUTED,
+                        background="#F7F1E8", foreground=C_MUTED,
                         relief='flat', padding=(8, 8))
         style.map('Treeview.Heading', background=[('active', '#F3F4F6')])
         style.map('Treeview',
@@ -156,7 +161,7 @@ class PayrollApp(tb.Window):
         tk.Label(logo_frame, text="PAYROLL", font=("Segoe UI", 9, "bold"),
                  bg=C_SIDEBAR, fg=C_ACTIVE).pack()
         tk.Label(logo_frame, text="Ram Krishna Enterprises", font=("Segoe UI", 8),
-                 bg=C_SIDEBAR, fg="#6B7280", wraplength=190).pack(pady=(4, 0))
+                 bg=C_SIDEBAR, fg="#8A7B6C", wraplength=190).pack(pady=(4, 0))
 
         # Nav buttons — flat rows with a left accent bar on the active item
         self._nav_btns = {}
@@ -178,7 +183,7 @@ class PayrollApp(tb.Window):
             accent = tk.Frame(row, bg=C_SIDEBAR, width=4)
             accent.pack(side=tk.LEFT, fill=tk.Y)
             btn = tk.Button(row, text=label, anchor='w', padx=18,
-                            font=("Segoe UI", 10), bg=C_SIDEBAR, fg="#9CA3AF",
+                            font=("Segoe UI", 10), bg=C_SIDEBAR, fg="#B5A695",
                             bd=0, relief=tk.FLAT, cursor='hand2',
                             activebackground=C_SIDEBAR_H, activeforeground=C_WHITE,
                             command=cmd)
@@ -190,7 +195,7 @@ class PayrollApp(tb.Window):
 
         # Version at bottom
         tk.Label(self.sidebar, text=f"v{APP_VERSION}  •  Shram Sahinta Compliant",
-                 font=("Segoe UI", 8), bg=C_SIDEBAR, fg="#4B5563").pack(side=tk.BOTTOM, pady=12)
+                 font=("Segoe UI", 8), bg=C_SIDEBAR, fg="#6E6155").pack(side=tk.BOTTOM, pady=12)
 
         # Right content area
         self.content = tk.Frame(self, bg=C_BG)
@@ -199,7 +204,7 @@ class PayrollApp(tb.Window):
     def _nav_leave(self, btn):
         active_text = getattr(self, '_active_nav', None)
         if btn.cget('text') != active_text:
-            btn.config(bg=C_SIDEBAR, fg="#9CA3AF")
+            btn.config(bg=C_SIDEBAR, fg="#B5A695")
 
     def _set_active_nav(self, label):
         self._active_nav = label
@@ -209,7 +214,7 @@ class PayrollApp(tb.Window):
                 accent.config(bg=C_ACTIVE)
                 row.config(bg=C_SIDEBAR_H)
             else:
-                btn.config(bg=C_SIDEBAR, fg="#9CA3AF", font=("Segoe UI", 10))
+                btn.config(bg=C_SIDEBAR, fg="#B5A695", font=("Segoe UI", 10))
                 accent.config(bg=C_SIDEBAR)
                 row.config(bg=C_SIDEBAR)
 
@@ -298,7 +303,7 @@ class PayrollApp(tb.Window):
             tk.Label(row, text=f"[{tag}]", font=("Segoe UI", 9, "bold"), bg=C_WHITE,
                      fg=color, width=10, anchor='w').pack(side=tk.LEFT)
             tk.Label(row, text=f"{name} — due {due.strftime('%d %b %Y')}",
-                     font=("Segoe UI", 9), bg=C_WHITE, fg="#444").pack(side=tk.LEFT)
+                     font=("Segoe UI", 9), bg=C_WHITE, fg="#4A4038").pack(side=tk.LEFT)
 
         # Statutory notice
         notice = tk.Frame(self.content, bg="#FFF3CD", padx=15, pady=10)
@@ -490,7 +495,7 @@ class PayrollApp(tb.Window):
         self._att_marks = {e['id']: dict(saved.get(e['id'], {})) for e in employees}
         self._att_cells = {}
 
-        hdr_bg = "#F9FAFB"
+        hdr_bg = "#F7F1E8"
         tk.Label(self._att_grid_frame, text="Employee", font=("Segoe UI", 9, "bold"),
                  bg=hdr_bg, fg=C_MUTED, width=20, anchor='w', padx=8).grid(row=0, column=0, sticky='nsew')
         for d in range(1, ndays + 1):
@@ -505,7 +510,7 @@ class PayrollApp(tb.Window):
         texts = {'': "P", 'H': "½", 'A': "A"}
 
         for r, emp in enumerate(employees, start=1):
-            row_bg = C_WHITE if r % 2 else "#F9FAFB"
+            row_bg = C_WHITE if r % 2 else "#F7F1E8"
             tk.Label(self._att_grid_frame, text=emp['name'][:22], font=("Segoe UI", 9),
                      bg=row_bg, anchor='w', padx=8).grid(row=r, column=0, sticky='nsew')
             for d in range(1, ndays + 1):
@@ -618,7 +623,7 @@ class PayrollApp(tb.Window):
         # Status bar
         self._proc_status = tk.StringVar(value="Ready — click 'Calculate All' to begin")
         tk.Label(self.content, textvariable=self._proc_status, font=("Segoe UI", 9),
-                 bg="#EEF2FF", fg=C_DARK, anchor='w', padx=10).pack(fill=tk.X, padx=20, pady=(0, 5))
+                 bg="#F5EDE0", fg=C_DARK, anchor='w', padx=10).pack(fill=tk.X, padx=20, pady=(0, 5))
 
         self._calculated_salaries = {}   # emp_id -> salary_dict
         self._load_existing_salaries()
@@ -965,7 +970,7 @@ class PayrollApp(tb.Window):
             tk.Label(card, text=title, font=("Segoe UI", 11, "bold"),
                      bg=C_WHITE, fg=C_DARK).pack(anchor='w')
             tk.Label(card, text=desc, font=("Segoe UI", 9), bg=C_WHITE,
-                     fg="#666").pack(anchor='w', pady=(2, 8))
+                     fg="#7A6E60").pack(anchor='w', pady=(2, 8))
             tb.Button(card, text="Generate →", command=cmd, bootstyle="primary").pack(anchor='w')
 
     def _report_monthly_summary(self):
@@ -1159,7 +1164,7 @@ class PayrollApp(tb.Window):
 
         has_pwd = db.has_password()
         status_text = "Password protection is ON." if has_pwd else "No password set — app opens without a login screen."
-        tk.Label(frame, text=status_text, font=("Segoe UI", 9), bg=C_BG, fg="#666").grid(
+        tk.Label(frame, text=status_text, font=("Segoe UI", 9), bg=C_BG, fg="#7A6E60").grid(
             row=sec_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
 
         btn_text = "🔑 Change Password" if has_pwd else "🔑 Set Password"
@@ -1175,7 +1180,7 @@ class PayrollApp(tb.Window):
         tk.Label(frame, text="💾 Data Backup", font=("Segoe UI", 12, "bold"),
                  bg=C_BG, fg=C_DARK).grid(row=bk_row+1, column=0, columnspan=6, sticky='w', padx=10)
         tk.Label(frame, text="Back up all employee and salary data to a file you can copy to a pen drive or cloud folder.",
-                 font=("Segoe UI", 9), bg=C_BG, fg="#666").grid(
+                 font=("Segoe UI", 9), bg=C_BG, fg="#7A6E60").grid(
             row=bk_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
         tb.Button(frame, text="📤 Backup Now", command=self._backup_now, bootstyle="success").grid(row=bk_row+3, column=0, sticky='w', padx=10)
         tb.Button(frame, text="📥 Restore From Backup", command=self._restore_backup, bootstyle="primary").grid(row=bk_row+3, column=1, sticky='w', padx=10)
@@ -1692,7 +1697,7 @@ class LoginWindow(tb.Window):
         tk.Label(self, text="🔒 RKE Payroll", font=("Segoe UI", 16, "bold"),
                  bg=C_BG, fg=C_SIDEBAR).pack(pady=(25, 5))
         tk.Label(self, text="Enter password to continue", font=("Segoe UI", 10),
-                 bg=C_BG, fg="#666").pack(pady=(0, 15))
+                 bg=C_BG, fg="#7A6E60").pack(pady=(0, 15))
 
         self._pwd_var = tk.StringVar()
         entry = tk.Entry(self, textvariable=self._pwd_var, show='*', font=("Segoe UI", 11), width=26)
