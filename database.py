@@ -140,6 +140,14 @@ def init_db():
     if 'additional_earnings' not in sr_cols:
         c.execute("ALTER TABLE salary_records ADD COLUMN additional_earnings REAL DEFAULT 0")
 
+    # Migration: every employee gets a baseline rate-history row so past months
+    # always have effective-dated rates to compute from
+    c.execute("""INSERT INTO salary_history
+                 (emp_id, effective_from, basic, hra, da, special_allowance, other_allowance, note)
+                 SELECT id, '2000-01-01', basic, hra, da, special_allowance, other_allowance, 'Baseline'
+                 FROM employees
+                 WHERE id NOT IN (SELECT DISTINCT emp_id FROM salary_history)""")
+
     c.execute("""CREATE TABLE IF NOT EXISTS tax_slabs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         regime TEXT NOT NULL,
@@ -406,14 +414,36 @@ def record_salary_revision(emp_id, data, note=''):
                         (emp_id,)).fetchone()
     changed = last is None or any(abs((last[f] or 0) - float(data[f] or 0)) > 0.005 for f in RATE_FIELDS)
     if changed:
+        # First-ever row is the baseline: effective from the beginning, so months
+        # before today still have rates to compute from. Later revisions apply
+        # from today onward — past months keep their old rates.
+        effective = '2000-01-01' if last is None else datetime.now().strftime('%Y-%m-%d')
         conn.execute("""INSERT INTO salary_history
             (emp_id, effective_from, basic, hra, da, special_allowance, other_allowance, note)
             VALUES (?,?,?,?,?,?,?,?)""",
-            (emp_id, datetime.now().strftime('%Y-%m-%d'),
+            (emp_id, effective,
              data['basic'], data['hra'], data['da'],
              data['special_allowance'], data['other_allowance'], note))
         conn.commit()
     conn.close()
+
+
+def get_rates_for_month(emp_id, year, month):
+    """Pay rates in effect for a given month (effective-dated): the latest
+    revision whose effective_from is on or before the end of that month.
+    Revising DA/basic today therefore never changes past months' salaries."""
+    month_end = f"{year:04d}-{month:02d}-31"
+    conn = get_conn()
+    row = conn.execute("""SELECT basic, hra, da, special_allowance, other_allowance
+                          FROM salary_history
+                          WHERE emp_id=? AND effective_from <= ?
+                          ORDER BY effective_from DESC, id DESC LIMIT 1""",
+                       (emp_id, month_end)).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    emp = get_employee(emp_id)
+    return {f: emp[f] for f in RATE_FIELDS} if emp else None
 
 
 def get_salary_history(emp_id):

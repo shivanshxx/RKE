@@ -14,8 +14,11 @@ import database as db
 import calculations as calc
 import reports
 import update_checker
+import ttkbootstrap as tb
 
-APP_VERSION = "1.4.0"
+UI_THEME = "cosmo"
+
+APP_VERSION = "1.5.0"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -50,9 +53,9 @@ CURRENT_MONTH = datetime.now().month
 #  MAIN APPLICATION WINDOW
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class PayrollApp(tk.Tk):
+class PayrollApp(tb.Window):
     def __init__(self):
-        super().__init__()
+        super().__init__(themename=UI_THEME)
         self.title("Ram Krishna Enterprises — Payroll Management System")
         self.geometry("1280x780")
         self.minsize(1100, 700)
@@ -116,10 +119,6 @@ class PayrollApp(tk.Tk):
 
     def _setup_styles(self):
         style = ttk.Style(self)
-        try:
-            style.theme_use('clam')
-        except Exception:
-            pass
 
         # Tables: taller rows, clean flat headers, indigo selection
         style.configure('Treeview', rowheight=32, font=("Segoe UI", 10),
@@ -282,9 +281,7 @@ class PayrollApp(tk.Tk):
             ("📋 Generate Form 16",  self.show_form16,              "#D97706"),
         ]
         for label, cmd, color in actions:
-            tk.Button(qa_frame, text=label, font=("Segoe UI", 10, "bold"),
-                      bg=color, fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
-                      padx=18, pady=10, command=cmd).pack(side=tk.LEFT, padx=8)
+            tb.Button(qa_frame, text=label, command=cmd, bootstyle="primary").pack(side=tk.LEFT, padx=8)
 
         # Compliance deadlines (previous wage month)
         dl_frame = tk.Frame(self.content, bg=C_WHITE, padx=15, pady=10,
@@ -331,15 +328,9 @@ class PayrollApp(tk.Tk):
         toolbar = tk.Frame(self.content, bg=C_BG)
         toolbar.pack(fill=tk.X, padx=20, pady=10)
 
-        tk.Button(toolbar, text="➕ Add Employee", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
-                  padx=14, pady=7,
-                  command=self._open_employee_form).pack(side=tk.LEFT, padx=(0, 8))
+        tb.Button(toolbar, text="➕ Add Employee", command=self._open_employee_form, bootstyle="success").pack(side=tk.LEFT, padx=(0, 8))
 
-        tk.Button(toolbar, text="🔄 Refresh", font=("Segoe UI", 10),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
-                  padx=14, pady=7,
-                  command=self.show_employees).pack(side=tk.LEFT, padx=(0, 8))
+        tb.Button(toolbar, text="🔄 Refresh", command=self.show_employees, bootstyle="primary").pack(side=tk.LEFT, padx=(0, 8))
 
         # Search
         tk.Label(toolbar, text="Search:", font=("Segoe UI", 10), bg=C_BG).pack(side=tk.LEFT, padx=8)
@@ -458,12 +449,8 @@ class PayrollApp(tk.Tk):
         tk.Label(ctrl, text="Year:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
         self._att_year = tk.IntVar(value=CURRENT_YEAR)
         ttk.Spinbox(ctrl, from_=2020, to=2035, textvariable=self._att_year, width=7).pack(side=tk.LEFT, padx=(4, 15))
-        tk.Button(ctrl, text="Load", font=("Segoe UI", 10), bg=C_HEADER, fg=C_WHITE,
-                  bd=0, padx=14, pady=6, cursor='hand2',
-                  command=self._load_attendance_grid).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="💾 Save Attendance", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=14, pady=6, cursor='hand2',
-                  command=self._save_attendance).pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="Load", command=self._load_attendance_grid, bootstyle="primary").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="💾 Save Attendance", command=self._save_attendance, bootstyle="success").pack(side=tk.LEFT, padx=4)
 
         # Legend
         legend = tk.Frame(ctrl, bg=C_BG)
@@ -602,15 +589,9 @@ class PayrollApp(tk.Tk):
         self._proc_present = tk.IntVar(value=26)
         ttk.Spinbox(ctrl, from_=0, to=31, textvariable=self._proc_present, width=5).pack(side=tk.LEFT, padx=(4, 15))
 
-        tk.Button(ctrl, text="🔢 Calculate All", font=("Segoe UI", 10, "bold"),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
-                  padx=14, pady=7, command=self._calculate_all_salaries).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="💾 Save All", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
-                  padx=14, pady=7, command=self._save_all_salaries).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="📊 Summary PDF", font=("Segoe UI", 10, "bold"),
-                  bg="#7C3AED", fg=C_WHITE, bd=0, relief=tk.FLAT, cursor='hand2',
-                  padx=14, pady=7, command=self._export_summary_pdf).pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="🔢 Calculate All", command=self._calculate_all_salaries, bootstyle="primary").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="💾 Save All", command=self._save_all_salaries, bootstyle="success").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="📊 Summary PDF", command=self._export_summary_pdf, bootstyle="info").pack(side=tk.LEFT, padx=4)
 
         # Salary table
         table_frame = tk.Frame(self.content, bg=C_BG)
@@ -666,25 +647,33 @@ class PayrollApp(tk.Tk):
         self.sal_tree.delete(*self.sal_tree.get_children())
         self._calculated_salaries = {}
 
+        locked = 0
+        computed = 0
         for emp in employees:
-            # Days worked priority: attendance grid > previously saved record > default spinner
             existing = db.get_salary_record(emp['id'], year, month)
+            if existing:
+                # Saved months are LOCKED: show as-is, never recompute or overwrite.
+                # Changes require the supervisory override in the edit dialog.
+                rec = dict(existing)
+                rec.update({'emp_code': emp['emp_code'], 'name': emp['name'] + '  🔒'})
+                self._insert_salary_row(rec)
+                locked += 1
+                continue
+
+            # Days worked priority: attendance grid > default spinner
             att_days = db.attendance_days_worked(emp['id'], year, month, wdays)
-            if att_days is not None:
-                dworked = att_days
-            elif existing:
-                dworked = existing['days_worked']
-            else:
-                dworked = float(default_present)
+            dworked = att_days if att_days is not None else float(default_present)
             ytd_gross, ytd_tds = db.get_ytd_totals(emp['id'], year, month)
 
-            sal = calc.compute_salary(emp, wdays, dworked, company_state=company_state,
+            # Rates in effect for THIS month (effective-dated), not today's rates
+            rates = db.get_rates_for_month(emp['id'], year, month)
+            emp_eff = dict(emp)
+            emp_eff.update(rates)
+
+            sal = calc.compute_salary(emp_eff, wdays, dworked, company_state=company_state,
                                        ytd_gross=ytd_gross, ytd_tds=ytd_tds,
                                        months_remaining=months_remaining)
-            # Preserve any bonus / one-off deduction already saved for this month
-            calc.apply_extras(sal,
-                              additional_earnings=(existing['additional_earnings'] if existing else 0) or 0,
-                              other_deductions=(existing['other_deductions'] if existing else 0) or 0)
+            calc.apply_extras(sal, additional_earnings=0, other_deductions=0)
             sal.update({'emp_id': emp['id'], 'year': year, 'month': month,
                         'total_days': wdays, 'days_worked': dworked,
                         'payment_mode': 'Bank Transfer', 'remarks': '',
@@ -692,10 +681,12 @@ class PayrollApp(tk.Tk):
                         'emp_code': emp['emp_code'], 'name': emp['name']})
             self._calculated_salaries[emp['id']] = sal
             self._insert_salary_row(sal)
+            computed += 1
         stripe_rows(self.sal_tree)
 
-        self._proc_status.set(f"Calculated {len(employees)} salaries for {calc.MONTH_NAMES[month]} {year}. "
-                               "Click 'Save All' to persist.")
+        self._proc_status.set(
+            f"{calc.MONTH_NAMES[month]} {year}: {computed} computed (unsaved), {locked} locked 🔒. "
+            "'Save All' saves only new records — saved months never change.")
 
     def _insert_salary_row(self, sal):
         code = sal.get('emp_code', '')
@@ -765,15 +756,9 @@ class PayrollApp(tk.Tk):
         self._slip_year = tk.IntVar(value=CURRENT_YEAR)
         ttk.Spinbox(ctrl, from_=2020, to=2035, textvariable=self._slip_year, width=7).pack(side=tk.LEFT, padx=(4, 15))
 
-        tk.Button(ctrl, text="🔍 Load", font=("Segoe UI", 10),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=12, pady=7, cursor='hand2',
-                  command=self._load_slip_list).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="📄 Print Selected", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=12, pady=7, cursor='hand2',
-                  command=self._print_selected_slip).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="📦 Print All Slips", font=("Segoe UI", 10, "bold"),
-                  bg="#7C3AED", fg=C_WHITE, bd=0, padx=12, pady=7, cursor='hand2',
-                  command=self._print_all_slips).pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="🔍 Load", command=self._load_slip_list, bootstyle="primary").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="📄 Print Selected", command=self._print_selected_slip, bootstyle="success").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="📦 Print All Slips", command=self._print_all_slips, bootstyle="info").pack(side=tk.LEFT, padx=4)
 
         table_frame = tk.Frame(self.content, bg=C_BG)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
@@ -856,15 +841,9 @@ class PayrollApp(tk.Tk):
         ttk.Combobox(ctrl, textvariable=self._f16_fy, state='readonly',
                      values=fy_options, width=10).pack(side=tk.LEFT, padx=(4, 15))
 
-        tk.Button(ctrl, text="🔍 Load Employees", font=("Segoe UI", 10),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=12, pady=7, cursor='hand2',
-                  command=self._load_f16_list).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="📋 Generate Selected", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=12, pady=7, cursor='hand2',
-                  command=self._gen_f16_selected).pack(side=tk.LEFT, padx=4)
-        tk.Button(ctrl, text="📦 Generate All Form 16", font=("Segoe UI", 10, "bold"),
-                  bg="#7C3AED", fg=C_WHITE, bd=0, padx=12, pady=7, cursor='hand2',
-                  command=self._gen_f16_all).pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="🔍 Load Employees", command=self._load_f16_list, bootstyle="primary").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="📋 Generate Selected", command=self._gen_f16_selected, bootstyle="success").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="📦 Generate All Form 16", command=self._gen_f16_all, bootstyle="info").pack(side=tk.LEFT, padx=4)
 
         table_frame = tk.Frame(self.content, bg=C_BG)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
@@ -974,6 +953,8 @@ class PayrollApp(tk.Tk):
              self._report_pf_ecr),
             ("🏧 Bank Advice (Salary Transfer)", "CSV sheet of account numbers, IFSC and net pay — hand to your bank for disbursement",
              self._report_bank_advice),
+            ("📗 Excel Payroll Register (.xlsx)", "Full financial-year workbook: one sheet per month + FY summary, straight from saved records",
+             self._report_excel_register),
         ]
 
         for title, desc, cmd in report_items:
@@ -985,9 +966,7 @@ class PayrollApp(tk.Tk):
                      bg=C_WHITE, fg=C_DARK).pack(anchor='w')
             tk.Label(card, text=desc, font=("Segoe UI", 9), bg=C_WHITE,
                      fg="#666").pack(anchor='w', pady=(2, 8))
-            tk.Button(card, text="Generate →", font=("Segoe UI", 10),
-                      bg=C_HEADER, fg=C_WHITE, bd=0, padx=12, pady=5, cursor='hand2',
-                      command=cmd).pack(anchor='w')
+            tb.Button(card, text="Generate →", command=cmd, bootstyle="primary").pack(anchor='w')
 
     def _report_monthly_summary(self):
         self.show_salary_processing()
@@ -1034,9 +1013,7 @@ class PayrollApp(tk.Tk):
             os.startfile(path)
             dlg.destroy()
 
-        tk.Button(dlg, text="📈 Generate PDF", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=14, pady=8, cursor='hand2',
-                  command=generate).grid(row=2, column=0, columnspan=2, pady=15)
+        tb.Button(dlg, text="📈 Generate PDF", command=generate, bootstyle="success").grid(row=2, column=0, columnspan=2, pady=15)
 
     def _report_pf_esi(self):
         month = CURRENT_MONTH
@@ -1070,6 +1047,28 @@ class PayrollApp(tk.Tk):
             msg += "\n\n⚠️ Skipped (no UAN on record):\n" + "\n".join(skipped)
         messagebox.showinfo("ECR Generated", msg)
         os.startfile(reports.OUTPUT_DIR)
+
+    def _report_excel_register(self):
+        fy = calc.current_fy_start()
+        months_data = {}
+        for m in list(range(4, 13)) + list(range(1, 4)):
+            y = fy if m >= 4 else fy + 1
+            recs = db.get_monthly_salaries(y, m)
+            if recs:
+                months_data[(y, m)] = recs
+        if not months_data:
+            messagebox.showwarning("No Data", f"No saved salary records found for FY {fy}-{str(fy+1)[2:]}.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save Excel Register", defaultextension=".xlsx",
+            initialfile=f"PayrollRegister_FY{fy}-{str(fy+1)[2:]}.xlsx",
+            filetypes=[("Excel Workbook", "*.xlsx")])
+        if not path:
+            return
+        company = db.get_company()
+        reports.generate_excel_register(company, fy, months_data, path)
+        messagebox.showinfo("Exported", f"Excel register saved to:\n{path}")
+        os.startfile(path)
 
     def _report_bank_advice(self):
         month, year = CURRENT_MONTH, CURRENT_YEAR
@@ -1148,9 +1147,7 @@ class PayrollApp(tk.Tk):
                 row=row, column=col+1, sticky='w', pady=8)
             self._setting_vars[key] = var
 
-        tk.Button(frame, text="💾 Save Settings", font=("Segoe UI", 11, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=20, pady=10, cursor='hand2',
-                  command=self._save_settings).grid(row=len(fields)//2 + 1, column=0,
+        tb.Button(frame, text="💾 Save Settings", command=self._save_settings, bootstyle="success").grid(row=len(fields)//2 + 1, column=0,
                                                     columnspan=6, pady=20)
 
         # ── Security ──────────────────────────────────────────────────────────
@@ -1166,14 +1163,10 @@ class PayrollApp(tk.Tk):
             row=sec_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
 
         btn_text = "🔑 Change Password" if has_pwd else "🔑 Set Password"
-        tk.Button(frame, text=btn_text, font=("Segoe UI", 10, "bold"),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
-                  command=self._open_password_dialog).grid(row=sec_row+3, column=0, sticky='w', padx=10)
+        tb.Button(frame, text=btn_text, command=self._open_password_dialog, bootstyle="primary").grid(row=sec_row+3, column=0, sticky='w', padx=10)
 
         if has_pwd:
-            tk.Button(frame, text="🗑 Remove Password", font=("Segoe UI", 10),
-                      bg=C_RED, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
-                      command=self._remove_password).grid(row=sec_row+3, column=1, sticky='w', padx=10)
+            tb.Button(frame, text="🗑 Remove Password", command=self._remove_password, bootstyle="danger").grid(row=sec_row+3, column=1, sticky='w', padx=10)
 
         # ── Backup / Restore ──────────────────────────────────────────────────
         bk_row = sec_row + 4
@@ -1184,12 +1177,8 @@ class PayrollApp(tk.Tk):
         tk.Label(frame, text="Back up all employee and salary data to a file you can copy to a pen drive or cloud folder.",
                  font=("Segoe UI", 9), bg=C_BG, fg="#666").grid(
             row=bk_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
-        tk.Button(frame, text="📤 Backup Now", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
-                  command=self._backup_now).grid(row=bk_row+3, column=0, sticky='w', padx=10)
-        tk.Button(frame, text="📥 Restore From Backup", font=("Segoe UI", 10),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=14, pady=7, cursor='hand2',
-                  command=self._restore_backup).grid(row=bk_row+3, column=1, sticky='w', padx=10)
+        tb.Button(frame, text="📤 Backup Now", command=self._backup_now, bootstyle="success").grid(row=bk_row+3, column=0, sticky='w', padx=10)
+        tb.Button(frame, text="📥 Restore From Backup", command=self._restore_backup, bootstyle="primary").grid(row=bk_row+3, column=1, sticky='w', padx=10)
 
     def _backup_now(self):
         dest_dir = filedialog.askdirectory(title="Choose backup folder")
@@ -1276,9 +1265,7 @@ class PasswordDialog(tk.Toplevel):
                  font=("Segoe UI", 10)).grid(row=row_n, column=1, sticky='w', pady=8)
         row_n += 1
 
-        tk.Button(frame, text="💾 Save Password", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
-                  command=self._save).grid(row=row_n, column=0, columnspan=2, pady=20)
+        tb.Button(frame, text="💾 Save Password", command=self._save, bootstyle="success").grid(row=row_n, column=0, columnspan=2, pady=20)
 
     def _save(self):
         if self.has_existing:
@@ -1414,12 +1401,8 @@ class EmployeeForm(tk.Toplevel):
         # Buttons
         btn_frame = tk.Frame(inner, bg=C_BG, pady=15)
         btn_frame.pack(fill=tk.X)
-        tk.Button(btn_frame, text="💾 Save", font=("Segoe UI", 11, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=20, pady=8, cursor='hand2',
-                  command=self._save).pack(side=tk.LEFT, padx=(10, 8))
-        tk.Button(btn_frame, text="Cancel", font=("Segoe UI", 10),
-                  bg=C_RED, fg=C_WHITE, bd=0, padx=20, pady=8, cursor='hand2',
-                  command=self.destroy).pack(side=tk.LEFT)
+        tb.Button(btn_frame, text="💾 Save", command=self._save, bootstyle="success").pack(side=tk.LEFT, padx=(10, 8))
+        tb.Button(btn_frame, text="Cancel", command=self.destroy, bootstyle="danger").pack(side=tk.LEFT)
 
     def _save(self):
         data = {}
@@ -1526,9 +1509,7 @@ class SalaryEditDialog(tk.Toplevel):
         self._pmmode  = row("Payment Mode",          'payment_mode',     'Bank Transfer', row_n=4)
         self._rem     = row("Remarks",               'remarks',          '', row_n=5)
 
-        tk.Button(frame, text="💾 Recalculate & Save", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
-                  command=self._save).grid(row=6, column=0, columnspan=2, pady=20)
+        tb.Button(frame, text="💾 Recalculate & Save", command=self._save, bootstyle="success").grid(row=6, column=0, columnspan=2, pady=20)
 
     def _save(self):
         try:
@@ -1542,11 +1523,36 @@ class SalaryEditDialog(tk.Toplevel):
             messagebox.showerror("Error", "Invalid numeric value.", parent=self)
             return
 
+        # Supervisory override: saved salary records are locked
+        if db.get_salary_record(self.emp_id, self.year, self.month):
+            if db.has_password():
+                from tkinter import simpledialog
+                pwd = simpledialog.askstring(
+                    "Supervisory Override",
+                    "This month's salary is already saved and locked.\n"
+                    "Enter the supervisor password to modify it:",
+                    show='*', parent=self)
+                if pwd is None:
+                    return
+                if not db.verify_password(pwd):
+                    messagebox.showerror("Denied", "Incorrect password. Record unchanged.", parent=self)
+                    return
+            else:
+                if not messagebox.askyesno(
+                        "Locked Record",
+                        "This month's salary is already saved and locked.\n"
+                        "No supervisor password is set (set one in Settings to enforce this properly).\n\n"
+                        "Override and modify anyway?", parent=self):
+                    return
+
         emp = db.get_employee(self.emp_id)
+        # Rates in effect for the month being edited, not today's rates
+        emp_eff = dict(emp)
+        emp_eff.update(db.get_rates_for_month(self.emp_id, self.year, self.month))
         company_state = db.get_company().get('state', 'Uttar Pradesh')
         months_remaining = calc.months_remaining_in_fy(self.month)
         ytd_gross, ytd_tds = db.get_ytd_totals(self.emp_id, self.year, self.month)
-        sal = calc.compute_salary(emp, wdays, dwork, company_state=company_state,
+        sal = calc.compute_salary(emp_eff, wdays, dwork, company_state=company_state,
                                    ytd_gross=ytd_gross, ytd_tds=ytd_tds,
                                    months_remaining=months_remaining)
         calc.apply_extras(sal, additional_earnings=bonus, other_deductions=oth)
@@ -1608,12 +1614,8 @@ class FnFDialog(tk.Toplevel):
 
         btns = tk.Frame(frame, bg=C_BG)
         btns.grid(row=7, column=0, columnspan=2, pady=12)
-        tk.Button(btns, text="🔢 Calculate", font=("Segoe UI", 10, "bold"),
-                  bg=C_HEADER, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
-                  command=self._calc).pack(side=tk.LEFT, padx=6)
-        tk.Button(btns, text="📄 Generate Settlement PDF", font=("Segoe UI", 10, "bold"),
-                  bg=C_GREEN, fg=C_WHITE, bd=0, padx=16, pady=8, cursor='hand2',
-                  command=self._generate).pack(side=tk.LEFT, padx=6)
+        tb.Button(btns, text="🔢 Calculate", command=self._calc, bootstyle="primary").pack(side=tk.LEFT, padx=6)
+        tb.Button(btns, text="📄 Generate Settlement PDF", command=self._generate, bootstyle="success").pack(side=tk.LEFT, padx=6)
 
         self._calc()
 
@@ -1674,12 +1676,12 @@ class FnFDialog(tk.Toplevel):
 #  LOGIN GATE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class LoginWindow(tk.Tk):
+class LoginWindow(tb.Window):
     """Shown before the main app if a password has been set. Max 3 attempts."""
     MAX_ATTEMPTS = 3
 
     def __init__(self):
-        super().__init__()
+        super().__init__(themename=UI_THEME)
         self.title("RKE Payroll — Login")
         self.geometry("380x220")
         self.resizable(False, False)
@@ -1701,8 +1703,7 @@ class LoginWindow(tk.Tk):
         self._err_label = tk.Label(self, text="", font=("Segoe UI", 9), bg=C_BG, fg=C_RED)
         self._err_label.pack(pady=(5, 0))
 
-        tk.Button(self, text="Login", font=("Segoe UI", 10, "bold"), bg=C_HEADER, fg=C_WHITE,
-                  bd=0, padx=20, pady=8, cursor='hand2', command=self._try_login).pack(pady=15)
+        tb.Button(self, text="Login", command=self._try_login, bootstyle="primary").pack(pady=15)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

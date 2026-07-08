@@ -695,6 +695,125 @@ def generate_payroll_summary(company, month_records, year, month, output_path=No
 
 
 # ================================================================
+#  EXCEL PAYROLL REGISTER (openpyxl)
+# ================================================================
+
+def generate_excel_register(company, fy_start, months_data, output_path):
+    """
+    months_data: {(year, month): [salary_record dicts joined with emp fields]}
+    One sheet per month plus an FY summary sheet. Values come straight from the
+    saved (locked) salary records, so the export matches what was actually paid.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    HEAD_FILL = PatternFill('solid', fgColor='111827')
+    HEAD_FONT = Font(color='FFFFFF', bold=True, size=10)
+    TOTAL_FILL = PatternFill('solid', fgColor='E0E7FF')
+    STRIPE = PatternFill('solid', fgColor='F9FAFB')
+    THIN = Border(bottom=Side(style='thin', color='E5E7EB'))
+
+    cols = [('Code', 10), ('Name', 22), ('Days in Month', 12), ('Days Worked', 12),
+            ('Basic', 11), ('HRA', 10), ('DA', 10), ('Special', 11), ('Other', 10),
+            ('Gross', 12), ('Bonus', 10), ('PF (Emp)', 10), ('ESI (Emp)', 10),
+            ('TDS', 10), ('PT', 8), ('Other Ded.', 10), ('Total Ded.', 11),
+            ('Net Pay', 12), ('PF (Empr)', 10), ('ESI (Empr)', 10)]
+    numeric_from = 4  # column index (0-based) where numbers start
+
+    fy_totals = {}
+
+    for (year, month) in sorted(months_data.keys()):
+        recs = months_data[(year, month)]
+        from calculations import MONTH_NAMES
+        ws = wb.create_sheet(f"{MONTH_NAMES[month][:3]} {year}")
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
+        c = ws.cell(row=1, column=1,
+                    value=f"{company.get('name','')} — Salary Register — {MONTH_NAMES[month]} {year}")
+        c.font = Font(bold=True, size=12)
+        c.alignment = Alignment(horizontal='center')
+
+        for j, (title, width) in enumerate(cols, start=1):
+            cell = ws.cell(row=2, column=j, value=title)
+            cell.fill = HEAD_FILL
+            cell.font = HEAD_FONT
+            cell.alignment = Alignment(horizontal='center', wrap_text=True)
+            ws.column_dimensions[get_column_letter(j)].width = width
+
+        totals = [0.0] * len(cols)
+        r = 3
+        for i, rec in enumerate(recs):
+            values = [
+                rec.get('emp_code', ''), rec.get('name', ''),
+                rec.get('total_days', 0), rec.get('days_worked', 0),
+                rec.get('basic', 0), rec.get('hra', 0), rec.get('da', 0),
+                rec.get('special_allowance', 0), rec.get('other_allowance', 0),
+                rec.get('gross_salary', 0), rec.get('additional_earnings', 0) or 0,
+                rec.get('pf_employee', 0), rec.get('esi_employee', 0),
+                rec.get('tds', 0), rec.get('pt', 0), rec.get('other_deductions', 0),
+                rec.get('total_deductions', 0), rec.get('net_salary', 0),
+                rec.get('pf_employer', 0), rec.get('esi_employer', 0),
+            ]
+            for j, v in enumerate(values, start=1):
+                cell = ws.cell(row=r, column=j, value=v)
+                cell.border = THIN
+                if i % 2:
+                    cell.fill = STRIPE
+                if j > numeric_from:
+                    cell.number_format = '#,##0.00'
+                    totals[j - 1] += float(v or 0)
+            r += 1
+
+        ws.cell(row=r, column=2, value='TOTAL').font = Font(bold=True)
+        for j in range(numeric_from + 1, len(cols) + 1):
+            cell = ws.cell(row=r, column=j, value=round(totals[j - 1], 2))
+            cell.font = Font(bold=True)
+            cell.fill = TOTAL_FILL
+            cell.number_format = '#,##0.00'
+        ws.freeze_panes = 'A3'
+
+        # accumulate FY totals per employee
+        for rec in recs:
+            key = (rec.get('emp_code', ''), rec.get('name', ''))
+            t = fy_totals.setdefault(key, {'gross': 0, 'bonus': 0, 'ded': 0, 'net': 0, 'months': 0})
+            t['gross'] += rec.get('gross_salary', 0)
+            t['bonus'] += rec.get('additional_earnings', 0) or 0
+            t['ded'] += rec.get('total_deductions', 0)
+            t['net'] += rec.get('net_salary', 0)
+            t['months'] += 1
+
+    # FY summary sheet
+    ws = wb.create_sheet(f"FY {fy_start}-{str(fy_start + 1)[2:]} Summary", 0)
+    ws.merge_cells('A1:G1')
+    c = ws.cell(row=1, column=1, value=f"{company.get('name','')} — FY {fy_start}-{str(fy_start + 1)[2:]} Payroll Summary")
+    c.font = Font(bold=True, size=12)
+    c.alignment = Alignment(horizontal='center')
+    sum_cols = [('Code', 10), ('Name', 24), ('Months Paid', 12), ('Total Gross', 14),
+                ('Total Bonus', 12), ('Total Deductions', 15), ('Total Net Paid', 14)]
+    for j, (title, width) in enumerate(sum_cols, start=1):
+        cell = ws.cell(row=2, column=j, value=title)
+        cell.fill = HEAD_FILL
+        cell.font = HEAD_FONT
+        ws.column_dimensions[get_column_letter(j)].width = width
+    r = 3
+    for (code, name), t in sorted(fy_totals.items()):
+        for j, v in enumerate([code, name, t['months'], round(t['gross'], 2),
+                               round(t['bonus'], 2), round(t['ded'], 2), round(t['net'], 2)], start=1):
+            cell = ws.cell(row=r, column=j, value=v)
+            if j >= 4:
+                cell.number_format = '#,##0.00'
+        r += 1
+    ws.freeze_panes = 'A3'
+
+    wb.save(output_path)
+    return output_path
+
+
+# ================================================================
 #  FULL & FINAL SETTLEMENT STATEMENT
 # ================================================================
 
