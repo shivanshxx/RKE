@@ -23,7 +23,7 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.6.0"
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -171,6 +171,7 @@ class PayrollApp(tb.Window):
             ("🏠  Dashboard",        self.show_dashboard),
             ("👥  Employees",         self.show_employees),
             ("📆  Attendance",        self.show_attendance),
+            ("📈  Wage Revision",     self.show_wage_revision),
             ("💰  Process Salary",    self.show_salary_processing),
             ("📄  Salary Slips",      self.show_salary_slips),
             ("📋  Form 16",           self.show_form16),
@@ -438,6 +439,298 @@ class PayrollApp(tb.Window):
     # ══════════════════════════════════════════════════════════════════════════
     #  ATTENDANCE (simple exception-based: unmarked = Present)
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  WAGE REVISION  (half-yearly DA / basic / HRA revision)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def show_wage_revision(self):
+        self._clear_content()
+        self._set_active_nav("📈  Wage Revision")
+        self._page_header("Wage Revision",
+                          "Enter the new Government DA / wage rates — applies from the date you choose")
+
+        ctrl = tk.Frame(self.content, bg=C_BG)
+        ctrl.pack(fill=tk.X, padx=20, pady=(12, 4))
+
+        tk.Label(ctrl, text="Effective From:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
+        self._rev_eff = tk.StringVar(value=self._default_revision_date())
+        tk.Entry(ctrl, textvariable=self._rev_eff, width=12,
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(ctrl, text="(YYYY-MM-DD)", font=("Segoe UI", 8), bg=C_BG,
+                 fg="#7A6E60").pack(side=tk.LEFT, padx=(0, 12))
+
+        tk.Label(ctrl, text="Rates entered as:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
+        self._rev_basis = tk.StringVar(value='Per Day')
+        ttk.Combobox(ctrl, textvariable=self._rev_basis, state='readonly',
+                     values=['Per Day', 'Per Month ÷ 26', 'Per Month ÷ 30'],
+                     width=14).pack(side=tk.LEFT, padx=(4, 12))
+
+        tk.Label(ctrl, text="Note:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
+        self._rev_note = tk.StringVar(value="DA revision")
+        tk.Entry(ctrl, textvariable=self._rev_note, width=22,
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=4)
+
+        # --- Bulk-fill toolbar ---
+        bulk = tk.Frame(self.content, bg="#FFF8E7", highlightbackground=C_BORDER,
+                        highlightthickness=1)
+        bulk.pack(fill=tk.X, padx=20, pady=(6, 4), ipady=7)
+
+        tk.Label(bulk, text="Bulk apply to all rows:", font=("Segoe UI", 9, "bold"),
+                 bg="#FFF8E7").pack(side=tk.LEFT, padx=(10, 6))
+
+        self._rev_bulk_comp = tk.StringVar(value='DA')
+        ttk.Combobox(bulk, textvariable=self._rev_bulk_comp, state='readonly',
+                     values=['Basic', 'HRA', 'DA', 'Special Allowance', 'Other Allowance'],
+                     width=17).pack(side=tk.LEFT, padx=3)
+
+        self._rev_bulk_mode = tk.StringVar(value='Set to')
+        ttk.Combobox(bulk, textvariable=self._rev_bulk_mode, state='readonly',
+                     values=['Set to', 'Increase by ₹', 'Increase by %'],
+                     width=14).pack(side=tk.LEFT, padx=3)
+
+        self._rev_bulk_val = tk.StringVar(value='0')
+        tk.Entry(bulk, textvariable=self._rev_bulk_val, width=10,
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=3)
+
+        tb.Button(bulk, text="Apply to Column", command=self._rev_bulk_apply,
+                  bootstyle="warning-outline").pack(side=tk.LEFT, padx=6)
+        tb.Button(bulk, text="↺ Reset", command=self._rev_reset,
+                  bootstyle="secondary-outline").pack(side=tk.LEFT, padx=3)
+
+        # --- Editable grid ---
+        wrap = tk.Frame(self.content, bg=C_WHITE, highlightbackground=C_BORDER,
+                        highlightthickness=1)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=20, pady=(6, 4))
+        canvas = tk.Canvas(wrap, bg=C_WHITE, highlightthickness=0)
+        vsb = ttk.Scrollbar(wrap, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(fill=tk.BOTH, expand=True)
+        grid = tk.Frame(canvas, bg=C_WHITE)
+        canvas.create_window((0, 0), window=grid, anchor='nw')
+        grid.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<MouseWheel>', lambda e: canvas.yview_scroll(-1 * (e.delta // 120), 'units'))
+
+        headers = ['Code', 'Name', 'Basic', 'HRA', 'DA', 'Spl. Allw', 'Other Allw',
+                   'New Rate/Day', 'Old Rate/Day', 'Change']
+        for c, h in enumerate(headers):
+            tk.Label(grid, text=h, font=("Segoe UI", 9, "bold"), bg=C_HEADER, fg=C_WHITE,
+                     padx=6, pady=6).grid(row=0, column=c, sticky='nsew', padx=1, pady=1)
+
+        self._rev_rows = {}          # emp_id -> {'old': {...}, 'vars': {...}, 'labels': (...)}
+        employees = db.get_all_employees()
+
+        for i, emp in enumerate(employees, start=1):
+            old = {f: float(emp[f] or 0) for f in db.RATE_FIELDS}
+            bg = C_WHITE if i % 2 else "#FAFAF7"
+            tk.Label(grid, text=emp['emp_code'], font=("Segoe UI", 9), bg=bg,
+                     anchor='w', padx=6).grid(row=i, column=0, sticky='nsew', padx=1, pady=1)
+            tk.Label(grid, text=emp['name'], font=("Segoe UI", 9), bg=bg,
+                     anchor='w', padx=6, width=22).grid(row=i, column=1, sticky='nsew', padx=1, pady=1)
+
+            vars_ = {}
+            for c, f in enumerate(db.RATE_FIELDS, start=2):
+                v = tk.StringVar(value=f"{old[f]:g}")
+                e = tk.Entry(grid, textvariable=v, width=11, font=("Segoe UI", 9),
+                             justify='right', relief=tk.FLAT, bg="#FFFDF5")
+                e.grid(row=i, column=c, sticky='nsew', padx=1, pady=1)
+                v.trace_add('write', lambda *a, eid=emp['id']: self._rev_recalc(eid))
+                vars_[f] = v
+
+            new_lbl = tk.Label(grid, text="", font=("Segoe UI", 9, "bold"), bg=bg, padx=6)
+            new_lbl.grid(row=i, column=7, sticky='nsew', padx=1, pady=1)
+            old_lbl = tk.Label(grid, text=f"{sum(old.values()):,.2f}", font=("Segoe UI", 9),
+                               bg=bg, fg="#7A6E60", padx=6)
+            old_lbl.grid(row=i, column=8, sticky='nsew', padx=1, pady=1)
+            chg_lbl = tk.Label(grid, text="—", font=("Segoe UI", 9, "bold"), bg=bg, padx=6)
+            chg_lbl.grid(row=i, column=9, sticky='nsew', padx=1, pady=1)
+
+            self._rev_rows[emp['id']] = {'old': old, 'vars': vars_, 'emp': emp,
+                                         'new_lbl': new_lbl, 'chg_lbl': chg_lbl}
+            self._rev_recalc(emp['id'])
+
+        # --- Footer ---
+        foot = tk.Frame(self.content, bg=C_BG)
+        foot.pack(fill=tk.X, padx=20, pady=(0, 10))
+
+        self._rev_status = tk.StringVar(
+            value=f"{len(employees)} employees loaded. Edit rates, then Apply Revision.")
+        tk.Label(foot, textvariable=self._rev_status, font=("Segoe UI", 9),
+                 bg="#EEF4FF", fg=C_DARK, anchor='w', padx=10).pack(
+                     side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+
+        tb.Button(foot, text="✅ Apply Revision", command=self._rev_apply,
+                  bootstyle="success").pack(side=tk.LEFT, padx=(8, 0))
+        tb.Button(foot, text="🕘 View History", command=self._rev_history,
+                  bootstyle="info-outline").pack(side=tk.LEFT, padx=4)
+
+    @staticmethod
+    def _default_revision_date():
+        """DA is revised half-yearly, effective 1 January and 1 July. Default to
+        the most recent such date, since revisions are notified in arrears."""
+        today = datetime.now()
+        return f"{today.year}-07-01" if today.month >= 7 else f"{today.year}-01-01"
+
+    def _rev_divisor(self):
+        basis = self._rev_basis.get()
+        return 26.0 if '26' in basis else (30.0 if '30' in basis else 1.0)
+
+    def _rev_recalc(self, emp_id):
+        """Refresh the derived per-day / change columns for one row."""
+        row = self._rev_rows.get(emp_id)
+        if not row:
+            return
+        div = self._rev_divisor()
+        try:
+            new_total = sum(float(row['vars'][f].get() or 0) for f in db.RATE_FIELDS) / div
+        except ValueError:
+            row['new_lbl'].config(text="invalid", fg=C_RED)
+            row['chg_lbl'].config(text="—", fg="#7A6E60")
+            return
+
+        old_total = sum(row['old'].values())
+        row['new_lbl'].config(text=f"{new_total:,.2f}", fg=C_DARK)
+        delta = new_total - old_total
+        if abs(delta) < 0.005:
+            row['chg_lbl'].config(text="no change", fg="#7A6E60")
+        else:
+            pct = (delta / old_total * 100) if old_total else 0
+            row['chg_lbl'].config(text=f"{delta:+,.2f}  ({pct:+.1f}%)",
+                                  fg=C_GREEN if delta > 0 else C_RED)
+
+    def _rev_bulk_apply(self):
+        field = {'Basic': 'basic', 'HRA': 'hra', 'DA': 'da',
+                 'Special Allowance': 'special_allowance',
+                 'Other Allowance': 'other_allowance'}[self._rev_bulk_comp.get()]
+        mode = self._rev_bulk_mode.get()
+        try:
+            val = float(self._rev_bulk_val.get())
+        except ValueError:
+            messagebox.showerror("Invalid", "Enter a number to apply.")
+            return
+
+        div = self._rev_divisor()
+        for emp_id, row in self._rev_rows.items():
+            try:
+                cur = float(row['vars'][field].get() or 0)
+            except ValueError:
+                cur = 0.0
+            if mode == 'Set to':
+                new = val
+            elif mode == 'Increase by ₹':
+                new = cur + val
+            else:                                   # Increase by %
+                new = cur * (1 + val / 100)
+            row['vars'][field].set(f"{round(new, 2):g}")
+
+        basis_note = "" if div == 1 else f" ({self._rev_basis.get()})"
+        self._rev_status.set(f"Bulk applied: {self._rev_bulk_comp.get()} — "
+                             f"{mode} {val:g}{basis_note}. Not saved yet.")
+
+    def _rev_reset(self):
+        for row in self._rev_rows.values():
+            for f in db.RATE_FIELDS:
+                row['vars'][f].set(f"{row['old'][f]:g}")
+        self._rev_status.set("Reset to current rates.")
+
+    def _rev_apply(self):
+        eff = self._rev_eff.get().strip()
+        try:
+            datetime.strptime(eff, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Invalid Date",
+                                 "Effective From must be a date like 2026-01-01.")
+            return
+
+        div = self._rev_divisor()
+        changed = []
+        for emp_id, row in self._rev_rows.items():
+            try:
+                new = {f: round(float(row['vars'][f].get() or 0) / div, 4) for f in db.RATE_FIELDS}
+            except ValueError:
+                messagebox.showerror("Invalid Rate",
+                                     f"{row['emp']['name']} has a non-numeric rate.")
+                return
+            if any(abs(new[f] - row['old'][f]) > 0.005 for f in db.RATE_FIELDS):
+                changed.append((emp_id, row, new))
+
+        if not changed:
+            messagebox.showinfo("Nothing to Apply", "No rates were changed.")
+            return
+
+        # Warn about months already paid at the old rates — those need arrears
+        arrears = []
+        for emp_id, row, new in changed:
+            affected = db.months_affected_by_revision(emp_id, eff)
+            if affected:
+                arrears.append((row['emp']['name'], len(affected)))
+
+        msg = (f"Apply new rates to {len(changed)} employee(s), "
+               f"effective {eff}?\n\n"
+               f"• Months before {eff} keep their old rates and are unaffected.\n"
+               f"• Salaries already saved are locked and will NOT change.")
+        if arrears:
+            names = ", ".join(f"{n} ({c} mth)" for n, c in arrears[:4])
+            more = f" and {len(arrears) - 4} more" if len(arrears) > 4 else ""
+            msg += (f"\n\n⚠️  {len(arrears)} employee(s) already have saved salaries on or after "
+                    f"{eff}:\n{names}{more}.\nThose months were paid at the old rates — "
+                    f"pay the difference as arrears (add it as Bonus/Additional in "
+                    f"Process Salary → edit row).")
+
+        if not messagebox.askyesno("Confirm Wage Revision", msg):
+            return
+
+        note = self._rev_note.get().strip() or 'Wage revision'
+        for emp_id, row, new in changed:
+            db.apply_wage_revision(emp_id, new, eff, note=f"{note} (w.e.f. {eff})")
+
+        messagebox.showinfo(
+            "Revision Applied",
+            f"✅ New rates saved for {len(changed)} employee(s), effective {eff}.\n\n"
+            "Salaries processed for months on or after this date will now use the new rates.")
+        self.show_wage_revision()
+
+    def _rev_history(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("Wage Revision History")
+        dlg.geometry("780x430")
+        dlg.configure(bg=C_BG)
+        dlg.grab_set()
+
+        top = tk.Frame(dlg, bg=C_BG)
+        top.pack(fill=tk.X, padx=12, pady=10)
+        tk.Label(top, text="Employee:", font=("Segoe UI", 10, "bold"), bg=C_BG).pack(side=tk.LEFT)
+        emp_map = {f"{e['emp_code']} - {e['name']}": e['id'] for e in db.get_all_employees()}
+        var = tk.StringVar()
+        combo = ttk.Combobox(top, textvariable=var, values=list(emp_map.keys()),
+                             state='readonly', width=32)
+        combo.pack(side=tk.LEFT, padx=8)
+
+        cols = ('Effective From', 'Basic', 'HRA', 'DA', 'Spl. Allw', 'Other', 'Rate/Day', 'Note')
+        tree = ttk.Treeview(dlg, columns=cols, show='headings')
+        for c in cols:
+            tree.heading(c, text=c)
+            tree.column(c, width=180 if c == 'Note' else 88, anchor='center')
+        tree.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+
+        def load(*_):
+            tree.delete(*tree.get_children())
+            if not var.get():
+                return
+            for h in db.get_salary_history(emp_map[var.get()]):
+                rate = sum(float(h[f] or 0) for f in db.RATE_FIELDS)
+                tree.insert('', 'end', values=(
+                    h['effective_from'],
+                    f"{h['basic']:,.2f}", f"{h['hra']:,.2f}", f"{h['da']:,.2f}",
+                    f"{h['special_allowance']:,.2f}", f"{h['other_allowance']:,.2f}",
+                    f"{rate:,.2f}", h.get('note', '')))
+            stripe_rows(tree)
+
+        combo.bind('<<ComboboxSelected>>', load)
+        if emp_map:
+            var.set(next(iter(emp_map)))
+            load()
 
     def show_attendance(self):
         self._clear_content()
@@ -764,6 +1057,8 @@ class PayrollApp(tb.Window):
         tb.Button(ctrl, text="🔍 Load", command=self._load_slip_list, bootstyle="primary").pack(side=tk.LEFT, padx=4)
         tb.Button(ctrl, text="📄 Print Selected", command=self._print_selected_slip, bootstyle="success").pack(side=tk.LEFT, padx=4)
         tb.Button(ctrl, text="📦 Print All Slips", command=self._print_all_slips, bootstyle="info").pack(side=tk.LEFT, padx=4)
+        tb.Button(ctrl, text="📒 Salary Register", command=self._print_salary_register,
+                  bootstyle="warning").pack(side=tk.LEFT, padx=4)
 
         table_frame = tk.Frame(self.content, bg=C_BG)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
@@ -813,8 +1108,33 @@ class PayrollApp(tb.Window):
         for emp_id in self._slip_records:
             self._generate_slip(emp_id, open_file=False)
             count += 1
-        messagebox.showinfo("Done", f"✅ {count} salary slips generated in:\n{reports.OUTPUT_DIR}")
+        # The register is the office copy of the same run — always produced
+        # alongside a bulk slip print so the two can never drift apart.
+        reg = self._build_salary_register(quiet=True)
+        msg = f"✅ {count} salary slips generated in:\n{reports.OUTPUT_DIR}"
+        if reg:
+            msg += f"\n\n📒 Salary Register also generated:\n{os.path.basename(reg)}"
+        messagebox.showinfo("Done", msg)
         os.startfile(reports.OUTPUT_DIR)
+
+    def _build_salary_register(self, quiet=False):
+        """Generate the monthly salary register PDF. Returns its path, or None."""
+        year, month = self._slip_year.get(), self._slip_month.get()
+        records = db.get_monthly_salaries(year, month)
+        if not records:
+            if not quiet:
+                messagebox.showwarning(
+                    "No Data",
+                    f"No salary records found for {calc.MONTH_NAMES[month]} {year}.\n"
+                    "Process and save the salaries first.")
+            return None
+        return reports.generate_salary_register(db.get_company(), records, year, month)
+
+    def _print_salary_register(self):
+        path = self._build_salary_register()
+        if path:
+            messagebox.showinfo("Salary Register", f"Salary Register saved to:\n{path}")
+            os.startfile(path)
 
     def _generate_slip(self, emp_id, open_file=True):
         sal = self._slip_records.get(emp_id)
@@ -950,6 +1270,8 @@ class PayrollApp(tb.Window):
         report_items = [
             ("📊 Monthly Payroll Summary", "Consolidated salary sheet for a selected month",
              self._report_monthly_summary),
+            ("📒 Monthly Salary Register", "Full-detail wage register for one month — every earning, deduction, employer contribution and bank account, with totals",
+             self._report_salary_register),
             ("📈 Annual Payroll Register", "Full-year salary register for all employees",
              self._report_annual_register),
             ("🏦 PF/ESI Contribution Report", "Monthly PF & ESI liabilities (Employee + Employer)",
@@ -975,6 +1297,42 @@ class PayrollApp(tb.Window):
 
     def _report_monthly_summary(self):
         self.show_salary_processing()
+
+    def _report_salary_register(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("Monthly Salary Register")
+        dlg.geometry("360x150")
+        dlg.configure(bg=C_BG)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Month:", font=("Segoe UI", 10, "bold"), bg=C_BG).grid(
+            row=0, column=0, sticky='e', padx=10, pady=12)
+        m_var = tk.IntVar(value=CURRENT_MONTH)
+        ttk.Combobox(dlg, textvariable=m_var, values=[m for m, _ in MONTHS],
+                     state='readonly', width=6).grid(row=0, column=1, sticky='w', padx=10, pady=12)
+
+        tk.Label(dlg, text="Year:", font=("Segoe UI", 10, "bold"), bg=C_BG).grid(
+            row=1, column=0, sticky='e', padx=10, pady=12)
+        y_var = tk.IntVar(value=CURRENT_YEAR)
+        ttk.Spinbox(dlg, from_=2020, to=2035, textvariable=y_var, width=8).grid(
+            row=1, column=1, sticky='w', padx=10, pady=12)
+
+        def generate():
+            year, month = y_var.get(), m_var.get()
+            records = db.get_monthly_salaries(year, month)
+            if not records:
+                messagebox.showwarning(
+                    "No Data",
+                    f"No salary records found for {calc.MONTH_NAMES[month]} {year}.",
+                    parent=dlg)
+                return
+            path = reports.generate_salary_register(db.get_company(), records, year, month)
+            messagebox.showinfo("Generated", f"Salary Register saved to:\n{path}", parent=dlg)
+            os.startfile(path)
+            dlg.destroy()
+
+        tb.Button(dlg, text="📒 Generate PDF", command=generate,
+                  bootstyle="success").grid(row=2, column=0, columnspan=2, pady=12)
 
     def _report_annual_register(self):
         dlg = tk.Toplevel(self)
@@ -1139,6 +1497,10 @@ class PayrollApp(tb.Window):
             ("PF Registration No","pf_reg",        25),
             ("ESI Registration No","esi_reg",      25),
             ("Financial Year",    "financial_year",10),
+            # Named in the Form 16 verification block
+            ("Signatory Name",    "signatory_name", 30),
+            ("Signatory S/o D/o", "signatory_father", 30),
+            ("Signatory Designation", "signatory_designation", 25),
         ]
 
         self._setting_vars = {}

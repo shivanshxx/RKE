@@ -55,6 +55,12 @@ def init_db():
     if 'password_salt' not in existing_cols:
         c.execute("ALTER TABLE company ADD COLUMN password_salt TEXT DEFAULT ''")
 
+    # Migration: the person who signs Form 16. The statutory verification names
+    # the individual responsible for the deduction, not just the firm.
+    for col in ('signatory_name', 'signatory_father', 'signatory_designation'):
+        if col not in existing_cols:
+            c.execute(f"ALTER TABLE company ADD COLUMN {col} TEXT DEFAULT ''")
+
     c.execute("""CREATE TABLE IF NOT EXISTS employees (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         emp_code TEXT UNIQUE NOT NULL,
@@ -208,10 +214,13 @@ def get_company():
 def save_company(data):
     conn = get_conn()
     conn.execute("""UPDATE company SET name=?, address=?, pan=?, tan=?, pf_reg=?, esi_reg=?,
-                    city=?, state=?, pincode=?, phone=?, email=?, financial_year=? WHERE id=1""",
+                    city=?, state=?, pincode=?, phone=?, email=?, financial_year=?,
+                    signatory_name=?, signatory_father=?, signatory_designation=? WHERE id=1""",
                  (data['name'], data['address'], data['pan'], data['tan'], data['pf_reg'],
                   data['esi_reg'], data['city'], data['state'], data['pincode'],
-                  data['phone'], data['email'], data['financial_year']))
+                  data['phone'], data['email'], data['financial_year'],
+                  data.get('signatory_name', ''), data.get('signatory_father', ''),
+                  data.get('signatory_designation', '')))
     conn.commit()
     conn.close()
 
@@ -343,7 +352,9 @@ def save_salary_record(data):
 def get_monthly_salaries(year, month):
     conn = get_conn()
     rows = conn.execute("""
-        SELECT sr.*, e.name, e.emp_code, e.designation, e.department
+        SELECT sr.*, e.name, e.emp_code, e.designation, e.department,
+               e.uan, e.pf_number, e.esi_number, e.pan,
+               e.bank_name, e.bank_account, e.ifsc, e.doj
         FROM salary_records sr
         JOIN employees e ON sr.emp_id = e.id
         WHERE sr.year=? AND sr.month=?
@@ -449,6 +460,64 @@ def get_rates_for_month(emp_id, year, month):
 def get_salary_history(emp_id):
     conn = get_conn()
     rows = conn.execute("SELECT * FROM salary_history WHERE emp_id=? ORDER BY id DESC", (emp_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def apply_wage_revision(emp_id, rates, effective_from, note=''):
+    """Record a pay revision with a caller-chosen effective date.
+
+    Unlike record_salary_revision (which dates the change from today), the
+    half-yearly Government DA revision is notified in arrears — announced in,
+    say, March but effective from 1 January. The caller therefore supplies the
+    effective date from the notification.
+
+    Re-applying a revision for the same effective date overwrites that row
+    rather than stacking a duplicate, so a mistyped DA can simply be corrected.
+    Months before the effective date keep their old rates, so already-saved
+    salaries are untouched.
+    """
+    conn = get_conn()
+    vals = tuple(float(rates[f] or 0) for f in RATE_FIELDS)
+    existing = conn.execute("""SELECT id FROM salary_history
+                               WHERE emp_id=? AND effective_from=?""",
+                            (emp_id, effective_from)).fetchone()
+    if existing:
+        conn.execute("""UPDATE salary_history SET basic=?, hra=?, da=?,
+                        special_allowance=?, other_allowance=?, note=? WHERE id=?""",
+                     vals + (note, existing['id']))
+    else:
+        conn.execute("""INSERT INTO salary_history
+            (emp_id, effective_from, basic, hra, da, special_allowance, other_allowance, note)
+            VALUES (?,?,?,?,?,?,?,?)""", (emp_id, effective_from) + vals + (note,))
+
+    # The employees table holds the *current* rates. Only refresh it when this
+    # revision is the one in force today — a future-dated revision must not
+    # change what today's payroll uses.
+    latest = conn.execute("""SELECT effective_from FROM salary_history
+                             WHERE emp_id=? AND effective_from <= ?
+                             ORDER BY effective_from DESC, id DESC LIMIT 1""",
+                          (emp_id, datetime.now().strftime('%Y-%m-%d'))).fetchone()
+    if latest and latest['effective_from'] == effective_from:
+        conn.execute("""UPDATE employees SET basic=?, hra=?, da=?,
+                        special_allowance=?, other_allowance=? WHERE id=?""",
+                     vals + (emp_id,))
+    conn.commit()
+    conn.close()
+
+
+def months_affected_by_revision(emp_id, effective_from):
+    """Already-saved salary months on or after a revision date. Those months were
+    paid at the old rates, so the caller can warn about arrears owed."""
+    try:
+        eff_y, eff_m = int(effective_from[:4]), int(effective_from[5:7])
+    except (ValueError, IndexError):
+        return []
+    conn = get_conn()
+    rows = conn.execute("""SELECT year, month, gross_salary, net_salary FROM salary_records
+                           WHERE emp_id=? AND (year > ? OR (year = ? AND month >= ?))
+                           ORDER BY year, month""",
+                        (emp_id, eff_y, eff_y, eff_m)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

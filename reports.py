@@ -7,13 +7,13 @@ Uses ReportLab library.
 import os
 import sys
 from datetime import datetime
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.units import mm, cm
 from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle, Paragraph,
                                  Spacer, HRFlowable, KeepTogether)
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import PageBreak
 
 import calculations as calc
@@ -597,25 +597,87 @@ def _f16_part_b(story, s, company, employee, annual_records, financial_year):
     story.append(ded_tbl)
     story.append(Spacer(1, 8*mm))
 
-    # ---- Declaration ----
-    story.append(Paragraph(
-        "I, the undersigned, solemnly declare that to the best of my knowledge and belief, "
-        "the information given in this certificate is correct and complete.",
-        s['Normal']))
-    story.append(Spacer(1, 12*mm))
+    # ---- Declaration / Verification ----
+    _f16_declaration(story, s, company, total['tds'])
 
-    sig2 = Table([[
-        Paragraph('', s['Normal']),
-        Paragraph('Signature & Seal of Employer', s['Center'])
-    ]], colWidths=[110*mm, 70*mm])
-    sig2.setStyle(TableStyle([
-        ('LINEABOVE', (1,0), (1,0), 1, DARK_BLUE),
-        ('TOPPADDING', (0,0), (-1,-1), 20),
+
+def _f16_declaration(story, s, company, total_tds):
+    """Statutory verification block printed at the foot of Form 16.
+
+    Wording follows the verification prescribed in the Form 16 format under
+    Rule 31(1)(a): the individual responsible for the deduction certifies the
+    amount deducted and deposited, and that the particulars are drawn from the
+    books of account and TDS statements.
+    """
+    block = [_section_header('VERIFICATION / DECLARATION',
+                             ParagraphStyle('vh', fontSize=10, fontName='Helvetica-Bold',
+                                            textColor=WHITE, alignment=TA_CENTER)),
+             Spacer(1, 3*mm)]
+
+    signatory = company.get('signatory_name') or '____________________'
+    father    = company.get('signatory_father') or '____________________'
+    desig     = company.get('signatory_designation') or 'Authorised Signatory'
+    words     = calc.amount_to_words(total_tds)
+
+    body = ParagraphStyle('declbody', fontSize=9, fontName='Helvetica',
+                          leading=15, alignment=TA_JUSTIFY, spaceAfter=6)
+
+    text = (
+        f"I, <b>{signatory}</b>, son/daughter of <b>{father}</b>, working in the capacity of "
+        f"<b>{desig}</b> in <b>{company.get('name', '')}</b>, do hereby certify that a sum of "
+        f"<b>Rs. {total_tds:,.2f}</b> (<i>{words}</i>) has been deducted at source and deposited "
+        f"to the credit of the Central Government in accordance with the provisions of "
+        f"Chapter XVII-B of the Income Tax Act, 1961."
+    )
+    text2 = (
+        "I further certify that the information given above is true, complete and correct, and "
+        "is based on the books of account, documents, TDS statements, TDS deposited and other "
+        "available records. The deductions of Provident Fund and Employees' State Insurance "
+        "shown herein have been made and remitted to the respective statutory authorities as "
+        "required under the Employees' Provident Funds and Miscellaneous Provisions Act, 1952 "
+        "and the Employees' State Insurance Act, 1948."
+    )
+
+    decl_tbl = Table([[Paragraph(text, body)], [Paragraph(text2, body)]], colWidths=[180*mm])
+    decl_tbl.setStyle(TableStyle([
+        ('BOX', (0,0), (-1,-1), 0.8, DARK_BLUE),
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#FAFCFF")),
+        ('TOPPADDING', (0,0), (-1,-1), 7),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 7),
+        ('LEFTPADDING', (0,0), (-1,-1), 9),
+        ('RIGHTPADDING', (0,0), (-1,-1), 9),
     ]))
-    story.append(sig2)
-    story.append(Paragraph(f"Name: {company.get('name', '')}", s['Normal']))
-    story.append(Paragraph(f"Place: {company.get('city', 'Prayagraj')}", s['Normal']))
-    story.append(Paragraph(f"Date: {datetime.now().strftime('%d/%m/%Y')}", s['Normal']))
+    block += [decl_tbl, Spacer(1, 6*mm)]
+
+    # Place / Date on the left, signature block on the right
+    left = [
+        [Paragraph(f"<b>Place:</b> {company.get('city', 'Prayagraj')}", s['Normal'])],
+        [Paragraph(f"<b>Date:</b> {datetime.now().strftime('%d/%m/%Y')}", s['Normal'])],
+        [Paragraph(f"<b>Designation:</b> {desig}", s['Normal'])],
+        [Paragraph(f"<b>Full Name:</b> {signatory}", s['Normal'])],
+    ]
+    left_tbl = Table(left, colWidths=[100*mm])
+    left_tbl.setStyle(TableStyle([
+        ('TOPPADDING', (0,0), (-1,-1), 3),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+    ]))
+
+    right_tbl = Table([[Paragraph('', s['Normal'])],
+                       [Paragraph('Signature of the person responsible for<br/>deduction of tax (with seal)',
+                                  ParagraphStyle('sigc', fontSize=8, fontName='Helvetica',
+                                                 alignment=TA_CENTER, leading=11))]],
+                      colWidths=[70*mm], rowHeights=[18*mm, None])
+    right_tbl.setStyle(TableStyle([
+        ('LINEBELOW', (0,0), (0,0), 1, DARK_BLUE),
+        ('TOPPADDING', (0,1), (0,1), 4),
+    ]))
+
+    block.append(Table([[left_tbl, right_tbl]], colWidths=[105*mm, 75*mm],
+                       style=TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')])))
+
+    # The verification must be signed as a whole — never let it break mid-block.
+    story.append(KeepTogether(block))
 
 
 # ================================================================
@@ -689,6 +751,230 @@ def generate_payroll_summary(company, month_records, year, month, output_path=No
         ('LEFTPADDING', (0,0), (-1,-1), 4),
     ]))
     story.append(tbl)
+
+    doc.build(story)
+    return output_path
+
+
+# ================================================================
+#  MONTHLY SALARY REGISTER  (full detail, landscape)
+# ================================================================
+
+# (label, salary_record key, column width in mm, is_money)
+_REGISTER_COLUMNS = [
+    ('S.No',      '_sno',               9,  False),
+    ('Emp Code',  'emp_code',          16,  False),
+    ('Name',      'name',              33,  False),
+    ('Designation', 'designation',     24,  False),
+    ('UAN',       'uan',               25,  False),
+    ('Days',      'days_worked',       11,  False),
+    ('Rate/Day',  'per_day_gross',     15,  True),
+    ('Basic',     'basic',             16,  True),
+    ('HRA',       'hra',               14,  True),
+    ('DA',        'da',                14,  True),
+    ('Spl. Allw', 'special_allowance', 15,  True),
+    ('Other Allw','other_allowance',   15,  True),
+    ('Bonus',     'additional_earnings', 15, True),
+    ('GROSS',     'gross_salary',      18,  True),
+    ('PF (Emp)',  'pf_employee',       15,  True),
+    ('ESI (Emp)', 'esi_employee',      15,  True),
+    ('TDS',       'tds',               14,  True),
+    ('PT',        'pt',                11,  True),
+    ('Other Ded', 'other_deductions',  15,  True),
+    ('Tot. Ded',  'total_deductions',  16,  True),
+    ('NET PAID',  'net_salary',        19,  True),
+    ('PF (Er)',   'pf_employer',       15,  True),
+    ('ESI (Er)',  'esi_employer',      15,  True),
+    ('Bank A/c',  'bank_account',      26,  False),
+]
+
+# Columns that get a totals figure on the last row
+_REGISTER_TOTALLED = {k for _, k, _, money in _REGISTER_COLUMNS if money} - {'per_day_gross'}
+
+
+def generate_salary_register(company, month_records, year, month, output_path=None):
+    """
+    Monthly Salary Register — the statutory muster/wage register companion to the
+    salary slips. One row per employee showing every earning, every deduction,
+    both employer contributions and the bank account paid into, with column
+    totals. Landscape A4 so the full breakdown fits on one row per employee.
+    """
+    from calculations import MONTH_NAMES
+    month_name = MONTH_NAMES[month]
+
+    if output_path is None:
+        fname = f"SalaryRegister_{year}_{month:02d}.pdf"
+        output_path = os.path.join(OUTPUT_DIR, fname)
+
+    doc = SimpleDocTemplate(output_path, pagesize=landscape(A4),
+                            leftMargin=8*mm, rightMargin=8*mm,
+                            topMargin=10*mm, bottomMargin=10*mm,
+                            title=f"Salary Register {month_name} {year}")
+
+    s = _styles()
+    story = []
+    page_w = landscape(A4)[0] - 16*mm
+
+    # per_day_gross is derived, not stored on the record — fill it in for rows
+    # loaded straight from the database.
+    month_records = [dict(r) for r in month_records]
+    for r in month_records:
+        if not r.get('per_day_gross'):
+            r['per_day_gross'] = calc.per_day_rate(r.get('gross_salary', 0),
+                                                   r.get('total_days') or 1)
+
+    # ---- Header ----
+    addr = (f"{company.get('address', '')} | {company.get('city', 'Prayagraj')}, "
+            f"{company.get('state', 'Uttar Pradesh')}")
+    reg_line = []
+    if company.get('pf_reg'):
+        reg_line.append(f"PF Reg: {company['pf_reg']}")
+    if company.get('esi_reg'):
+        reg_line.append(f"ESI Reg: {company['esi_reg']}")
+    if company.get('tan'):
+        reg_line.append(f"TAN: {company['tan']}")
+
+    hdr_rows = [[_para(company.get('name', 'Ram Krishna Enterprises'), s['CompanyName'])],
+                [_para(addr, s['CompanyAddr'])]]
+    if reg_line:
+        hdr_rows.append([_para('  |  '.join(reg_line), s['CompanyAddr'])])
+    hdr = Table(hdr_rows, colWidths=[page_w])
+    hdr.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), LIGHT_BLUE),
+        ('BOX', (0,0), (-1,-1), 1, DARK_BLUE),
+        ('TOPPADDING', (0,0), (-1,-1), 5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+    ]))
+    story.append(hdr)
+    story.append(Spacer(1, 2*mm))
+
+    title = Table([[_para(f'MONTHLY SALARY REGISTER — {month_name.upper()} {year}', s['SlipTitle'])]],
+                  colWidths=[page_w])
+    title.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), DARK_BLUE),
+        ('TOPPADDING', (0,0), (-1,-1), 5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+    ]))
+    story.append(title)
+    story.append(Spacer(1, 3*mm))
+
+    # ---- Column set: drop columns that are zero for every employee, so the
+    # register stays readable for firms that don't use all components ----
+    active_cols = []
+    for label, key, width, money in _REGISTER_COLUMNS:
+        if money and key not in ('gross_salary', 'net_salary', 'total_deductions'):
+            if not any(abs(float(r.get(key) or 0)) > 0.005 for r in month_records):
+                continue
+        active_cols.append((label, key, width, money))
+
+    h_style = ParagraphStyle('rh', fontSize=6.5, fontName='Helvetica-Bold',
+                             textColor=WHITE, alignment=TA_CENTER, leading=8)
+    cell    = ParagraphStyle('rc', fontSize=6.5, fontName='Helvetica', leading=8)
+    cell_r  = ParagraphStyle('rcr', fontSize=6.5, fontName='Helvetica',
+                             alignment=TA_RIGHT, leading=8)
+    cell_b  = ParagraphStyle('rcb', fontSize=6.5, fontName='Helvetica-Bold',
+                             alignment=TA_RIGHT, leading=8)
+
+    rows = [[Paragraph(label, h_style) for label, _, _, _ in active_cols]]
+    totals = {k: 0.0 for k in _REGISTER_TOTALLED}
+
+    for i, r in enumerate(month_records, start=1):
+        row = []
+        for label, key, width, money in active_cols:
+            if key == '_sno':
+                row.append(Paragraph(str(i), cell))
+            elif money:
+                val = float(r.get(key) or 0)
+                if key in totals:
+                    totals[key] += val
+                style = cell_b if key == 'net_salary' else cell_r
+                row.append(Paragraph(f"{val:,.0f}", style))
+            else:
+                row.append(Paragraph(str(r.get(key) or ''), cell))
+        rows.append(row)
+
+    # Totals row
+    tot_row = []
+    for idx, (label, key, width, money) in enumerate(active_cols):
+        if idx == 0:
+            tot_row.append(Paragraph('TOTAL', ParagraphStyle('tl', fontSize=6.5,
+                                     fontName='Helvetica-Bold', leading=8)))
+        elif money and key in totals:
+            tot_row.append(Paragraph(f"{totals[key]:,.0f}", cell_b))
+        else:
+            tot_row.append(Paragraph('', cell))
+    rows.append(tot_row)
+
+    # Scale the declared widths to exactly fill the page
+    raw_w = [w for _, _, w, _ in active_cols]
+    scale = page_w / (sum(raw_w) * mm)
+    col_w = [w * mm * scale for w in raw_w]
+
+    tbl = Table(rows, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.25, colors.HexColor("#B8C4D0")),
+        ('BACKGROUND', (0,0), (-1,0), MID_BLUE),
+        ('ROWBACKGROUNDS', (0,1), (-1,-2), [WHITE, LIGHT_GRAY]),
+        ('BACKGROUND', (0,-1), (-1,-1), LIGHT_BLUE),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        # 'TOTAL' needs more room than the S.No column — let it run across the
+        # first three label columns.
+        ('SPAN', (0,-1), (2,-1)),
+        ('TOPPADDING', (0,0), (-1,-1), 2.5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
+        ('LEFTPADDING', (0,0), (-1,-1), 2),
+        ('RIGHTPADDING', (0,0), (-1,-1), 2),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 4*mm))
+
+    # ---- Summary panel ----
+    emp_count = len(month_records)
+    t_gross = totals.get('gross_salary', 0)
+    t_net   = totals.get('net_salary', 0)
+    t_ded   = totals.get('total_deductions', 0)
+    pf_total  = totals.get('pf_employee', 0) + totals.get('pf_employer', 0)
+    esi_total = totals.get('esi_employee', 0) + totals.get('esi_employer', 0)
+    cost = t_gross + totals.get('pf_employer', 0) + totals.get('esi_employer', 0)
+
+    sm_l = ParagraphStyle('sml', fontSize=8, fontName='Helvetica-Bold')
+    sm_v = ParagraphStyle('smv', fontSize=8, fontName='Helvetica', alignment=TA_RIGHT)
+    summary = [
+        [Paragraph('Employees Paid', sm_l),        Paragraph(str(emp_count), sm_v),
+         Paragraph('Total PF Payable (E+Er)', sm_l), Paragraph(f"Rs. {pf_total:,.2f}", sm_v)],
+        [Paragraph('Total Gross Wages', sm_l),     Paragraph(f"Rs. {t_gross:,.2f}", sm_v),
+         Paragraph('Total ESI Payable (E+Er)', sm_l), Paragraph(f"Rs. {esi_total:,.2f}", sm_v)],
+        [Paragraph('Total Deductions', sm_l),      Paragraph(f"Rs. {t_ded:,.2f}", sm_v),
+         Paragraph('TDS Payable', sm_l),            Paragraph(f"Rs. {totals.get('tds', 0):,.2f}", sm_v)],
+        [Paragraph('Net Amount Disbursed', sm_l),  Paragraph(f"Rs. {t_net:,.2f}", sm_v),
+         Paragraph('Total Cost to Company', sm_l),  Paragraph(f"Rs. {cost:,.2f}", sm_v)],
+    ]
+    qw = page_w / 4
+    sum_tbl = Table(summary, colWidths=[qw*1.1, qw*0.9, qw*1.1, qw*0.9])
+    sum_tbl.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.4, colors.HexColor("#CCCCCC")),
+        ('BACKGROUND', (0,0), (0,-1), LIGHT_BLUE),
+        ('BACKGROUND', (2,0), (2,-1), LIGHT_BLUE),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('LEFTPADDING', (0,0), (-1,-1), 6),
+        ('RIGHTPADDING', (0,0), (-1,-1), 6),
+    ]))
+    words = Paragraph(f"Net amount disbursed: <b>{calc.amount_to_words(t_net)}</b>",
+                      ParagraphStyle('words', fontSize=8, fontName='Helvetica-Oblique'))
+
+    sig = Table([[Paragraph('Prepared By', s['Center']),
+                  Paragraph('Checked By', s['Center']),
+                  Paragraph('Authorised Signatory', s['Center'])]],
+                colWidths=[page_w/3]*3)
+    sig.setStyle(TableStyle([
+        ('LINEABOVE', (0,0), (-1,0), 0.8, DARK_BLUE),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+    ]))
+
+    # Summary, amount-in-words and signatures move to the next page as one unit,
+    # so the signature line is never stranded on a page of its own.
+    story.append(KeepTogether([sum_tbl, Spacer(1, 3*mm), words, Spacer(1, 10*mm), sig]))
 
     doc.build(story)
     return output_path
