@@ -23,7 +23,7 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.7.0"
 BUILD_DATE = "09-08-2026"   # bumped at each release build
 
 
@@ -191,6 +191,7 @@ class PayrollApp(tb.Window):
             ("🏠  Dashboard",        self.show_dashboard),
             ("👥  Employees",         self.show_employees),
             ("📆  Attendance",        self.show_attendance),
+            ("🏛  Govt DA Rates",     self.show_da_rates),
             ("📈  Wage Revision",     self.show_wage_revision),
             ("💰  Process Salary",    self.show_salary_processing),
             ("📄  Salary Slips",      self.show_salary_slips),
@@ -369,10 +370,11 @@ class PayrollApp(tb.Window):
         table_frame = tk.Frame(self.content, bg=C_BG)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
 
-        cols = ('Code', 'Name', 'Designation', 'Department', 'Basic/Day', 'Gross/Day', 'Est. Gross (26d)', 'Status')
+        cols = ('Code', 'Name', 'Designation', 'Location', 'Skill', 'Basic/Day',
+                'DA/Day (Govt)', 'Gross/Day', 'Status')
         self.emp_tree = ttk.Treeview(table_frame, columns=cols, show='headings', selectmode='browse')
 
-        widths = [70, 160, 120, 110, 80, 80, 110, 70]
+        widths = [65, 150, 110, 90, 100, 80, 95, 85, 70]
         for col, w in zip(cols, widths):
             self.emp_tree.heading(col, text=col)
             self.emp_tree.column(col, width=w, minwidth=w, anchor='center')
@@ -397,16 +399,23 @@ class PayrollApp(tb.Window):
     def _filter_employees(self):
         search = self._emp_search.get().lower() if hasattr(self, '_emp_search') else ''
         self.emp_tree.delete(*self.emp_tree.get_children())
+        loc_names = {l['id']: l['name'] for l in db.list_locations(active_only=False)}
         for emp in self._all_employees:
             if search and search not in emp['name'].lower() and search not in emp['emp_code'].lower():
                 continue
-            per_day_gross = emp['basic'] + emp['hra'] + emp['da'] + emp['special_allowance'] + emp['other_allowance']
-            est_monthly_gross = per_day_gross * 26
+            # DA shown is the Government rate currently in force for this
+            # employee's location + skill — not a stored per-employee figure.
+            skill = emp.get('skill_category') or 'Unskilled'
+            da = db.resolve_da_per_day(emp.get('location_id'), skill,
+                                        CURRENT_YEAR, CURRENT_MONTH, emp['basic'])
+            da_text = f"₹{da:,.2f}" if da is not None else "— not set —"
+            per_day_gross = (emp['basic'] + emp['hra'] + (da or 0)
+                             + emp['special_allowance'] + emp['other_allowance'])
             self.emp_tree.insert('', 'end', iid=str(emp['id']),
                                  values=(emp['emp_code'], emp['name'], emp['designation'],
-                                         emp['department'], f"₹{emp['basic']:,.2f}",
-                                         f"₹{per_day_gross:,.2f}", f"₹{est_monthly_gross:,.0f}",
-                                         emp['status']))
+                                         loc_names.get(emp.get('location_id'), '— none —'),
+                                         skill, f"₹{emp['basic']:,.2f}", da_text,
+                                         f"₹{per_day_gross:,.2f}", emp['status']))
         stripe_rows(self.emp_tree)
 
     def _open_employee_form(self, emp_id=None):
@@ -459,6 +468,138 @@ class PayrollApp(tb.Window):
     # ══════════════════════════════════════════════════════════════════════════
     #  ATTENDANCE (simple exception-based: unmarked = Present)
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  GOVERNMENT DA RATES  (per location + skill category, half-yearly)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def show_da_rates(self):
+        self._clear_content()
+        self._set_active_nav("🏛  Govt DA Rates")
+        self._page_header("Government DA Rates",
+                          "DA as notified by the Government — per location, per skill category")
+
+        body = tk.Frame(self.content, bg=C_BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=12)
+
+        # ── Locations ────────────────────────────────────────────────────────
+        loc_card = tk.Frame(body, bg=C_WHITE, highlightbackground=C_BORDER,
+                            highlightthickness=1, padx=14, pady=12)
+        loc_card.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 14))
+        tk.Label(loc_card, text="Locations", font=("Segoe UI", 12, "bold"),
+                 bg=C_WHITE, fg=C_DARK).pack(anchor='w')
+        tk.Label(loc_card, text=f"Each location gets its own number.\nName limit {db.LOCATION_NAME_MAX} characters.",
+                 font=("Segoe UI", 8), bg=C_WHITE, fg=C_MUTED, justify=tk.LEFT).pack(anchor='w', pady=(0, 8))
+
+        self.loc_tree = ttk.Treeview(loc_card, columns=('No', 'Name'), show='headings', height=12)
+        self.loc_tree.heading('No', text='No')
+        self.loc_tree.heading('Name', text='Location')
+        self.loc_tree.column('No', width=45, anchor='center')
+        self.loc_tree.column('Name', width=130, anchor='w')
+        self.loc_tree.pack(fill=tk.Y)
+
+        add_row = tk.Frame(loc_card, bg=C_WHITE)
+        add_row.pack(fill=tk.X, pady=(10, 0))
+        self._new_loc = tk.StringVar()
+        ent = tk.Entry(add_row, textvariable=self._new_loc, width=14, font=("Segoe UI", 10))
+        ent.pack(side=tk.LEFT)
+        ent.bind('<Return>', lambda e: self._add_location())
+        # hard-stop typing past the limit
+        self._new_loc.trace_add('write', lambda *a: self._new_loc.set(
+            self._new_loc.get()[:db.LOCATION_NAME_MAX])
+            if len(self._new_loc.get()) > db.LOCATION_NAME_MAX else None)
+        tb.Button(add_row, text="Add", command=self._add_location,
+                  bootstyle="success").pack(side=tk.LEFT, padx=6)
+        tb.Button(loc_card, text="Delete Selected", command=self._delete_location,
+                  bootstyle="danger-outline").pack(anchor='w', pady=(8, 0))
+
+        # ── DA rates ─────────────────────────────────────────────────────────
+        rate_card = tk.Frame(body, bg=C_WHITE, highlightbackground=C_BORDER,
+                             highlightthickness=1, padx=14, pady=12)
+        rate_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tk.Label(rate_card, text="DA Notifications", font=("Segoe UI", 12, "bold"),
+                 bg=C_WHITE, fg=C_DARK).pack(anchor='w')
+        tk.Label(rate_card,
+                 text="Enter each Government notification once. Every employee in that location "
+                      "and skill category uses it automatically — including people added later.",
+                 font=("Segoe UI", 8), bg=C_WHITE, fg=C_MUTED, wraplength=620,
+                 justify=tk.LEFT).pack(anchor='w', pady=(0, 8))
+
+        tb.Button(rate_card, text="➕ Add DA Notification", command=self._add_da_rate,
+                  bootstyle="primary").pack(anchor='w', pady=(0, 10))
+
+        cols = ('Location', 'Skill', 'Effective From', 'DA', 'Note')
+        self.da_tree = ttk.Treeview(rate_card, columns=cols, show='headings')
+        widths = [110, 110, 110, 130, 200]
+        for c_, w in zip(cols, widths):
+            self.da_tree.heading(c_, text=c_)
+            self.da_tree.column(c_, width=w, anchor='center' if c_ != 'Note' else 'w')
+        vsb = ttk.Scrollbar(rate_card, orient='vertical', command=self.da_tree.yview)
+        self.da_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.da_tree.pack(fill=tk.BOTH, expand=True)
+        tb.Button(rate_card, text="Delete Selected Rate", command=self._delete_da_rate,
+                  bootstyle="danger-outline").pack(anchor='w', pady=(8, 0))
+
+        self._refresh_da_screen()
+
+    def _refresh_da_screen(self):
+        self.loc_tree.delete(*self.loc_tree.get_children())
+        for l in db.list_locations():
+            self.loc_tree.insert('', 'end', iid=str(l['id']), values=(l['id'], l['name']))
+        stripe_rows(self.loc_tree)
+
+        self.da_tree.delete(*self.da_tree.get_children())
+        for r in db.list_da_rates():
+            shown = (f"{r['da_value']:g}% of basic" if r['rate_type'] == 'percent'
+                     else f"₹{r['da_value']:,.2f}/day")
+            self.da_tree.insert('', 'end', iid=str(r['id']),
+                                values=(r['location_name'], r['skill'],
+                                        r['effective_from'], shown, r['note'] or ''))
+        stripe_rows(self.da_tree)
+
+    def _add_location(self):
+        name = self._new_loc.get().strip()
+        if not name:
+            return
+        try:
+            db.add_location(name)
+            self._new_loc.set('')
+            self._refresh_da_screen()
+        except ValueError as ex:
+            messagebox.showerror("Cannot Add", str(ex))
+
+    def _delete_location(self):
+        sel = self.loc_tree.focus()
+        if not sel:
+            messagebox.showinfo("Select a location", "Please select a location first.")
+            return
+        try:
+            db.delete_location(int(sel))
+            self._refresh_da_screen()
+        except ValueError as ex:
+            messagebox.showerror("Cannot Delete", str(ex))
+
+    def _add_da_rate(self, preset_location=None, preset_skill=None, preset_date=None):
+        if not db.list_locations():
+            messagebox.showwarning("No Locations", "Add a location first.")
+            return
+        dlg = DARateDialog(self, preset_location=preset_location,
+                           preset_skill=preset_skill, preset_date=preset_date)
+        self.wait_window(dlg)
+        if getattr(self, 'da_tree', None) and self.da_tree.winfo_exists():
+            self._refresh_da_screen()
+        return dlg.saved
+
+    def _delete_da_rate(self):
+        sel = self.da_tree.focus()
+        if not sel:
+            messagebox.showinfo("Select a rate", "Please select a DA notification first.")
+            return
+        if messagebox.askyesno("Confirm", "Delete this DA notification?\n\n"
+                                          "Salaries already saved are not affected."):
+            db.delete_da_rate(int(sel))
+            self._refresh_da_screen()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  WAGE REVISION  (half-yearly DA / basic / HRA revision)
@@ -962,11 +1103,18 @@ class PayrollApp(tb.Window):
         company_state = db.get_company().get('state', 'Uttar Pradesh')
         months_remaining = calc.months_remaining_in_fy(month)
 
+        # The Government DA for this month must be known before anything is
+        # computed. Anything missing is asked for now, once — and reused from
+        # then on for every employee in that location and skill category.
+        if not self._ensure_da_for_month(year, month):
+            return
+
         self.sal_tree.delete(*self.sal_tree.get_children())
         self._calculated_salaries = {}
 
         locked = 0
         computed = 0
+        skipped = []
         for emp in employees:
             existing = db.get_salary_record(emp['id'], year, month)
             if existing:
@@ -988,6 +1136,15 @@ class PayrollApp(tb.Window):
             emp_eff = dict(emp)
             emp_eff.update(rates)
 
+            # DA always comes from the Government notification for this
+            # employee's location + skill, for the period covering this month.
+            da_per_day = db.resolve_da_per_day(emp.get('location_id'), emp.get('skill_category'),
+                                                year, month, emp_eff.get('basic', 0))
+            if da_per_day is None:
+                skipped.append(emp['name'])
+                continue
+            emp_eff['da'] = da_per_day
+
             sal = calc.compute_salary(emp_eff, wdays, dworked, company_state=company_state,
                                        ytd_gross=ytd_gross, ytd_tds=ytd_tds,
                                        months_remaining=months_remaining)
@@ -1002,9 +1159,65 @@ class PayrollApp(tb.Window):
             computed += 1
         stripe_rows(self.sal_tree)
 
-        self._proc_status.set(
-            f"{calc.MONTH_NAMES[month]} {year}: {computed} computed (unsaved), {locked} locked 🔒. "
-            "'Save All' saves only new records — saved months never change.")
+        status = (f"{calc.MONTH_NAMES[month]} {year}: {computed} computed (unsaved), "
+                  f"{locked} locked 🔒. 'Save All' saves only new records — saved months never change.")
+        if skipped:
+            status += f"  ⚠ {len(skipped)} skipped (no location/DA): {', '.join(skipped[:5])}"
+        self._proc_status.set(status)
+
+    def _ensure_da_for_month(self, year, month):
+        """Ask for any Government DA this month needs but does not have yet.
+        Returns False if the user cancelled, so payroll should not proceed."""
+        while True:
+            missing = db.missing_da_for_month(year, month)
+            if not missing:
+                return True
+
+            no_loc = [m for m in missing if m['reason'] == 'no_location']
+            need_rate = [m for m in missing if m['reason'] == 'no_rate']
+
+            if no_loc:
+                names = ', '.join(m['emp_names'] or '' for m in no_loc)
+                messagebox.showwarning(
+                    "Location Not Set",
+                    f"These employees have no location, so the Government DA cannot be "
+                    f"applied and they will be skipped:\n\n{names}\n\n"
+                    "Set their location in the Employees screen.")
+                if not need_rate:
+                    return True
+
+            if not need_rate:
+                return True
+
+            m = need_rate[0]
+            period = f"{calc.MONTH_NAMES[month]} {year}"
+            proceed = messagebox.askyesno(
+                "Government DA Needed",
+                f"No DA notification covers {period} for:\n\n"
+                f"    Location:  {m['location_name']}\n"
+                f"    Skill:     {m['skill']}\n"
+                f"    Affects:   {m['emp_count']} employee(s)\n\n"
+                "Enter the Government DA for this area and skill category now?\n"
+                "It is entered once and reused for this whole period.")
+            if not proceed:
+                return False
+
+            # Default the effective date to the start of the half-year period
+            # containing this month (Apr–Sep / Oct–Mar), which is how DA is
+            # notified. The date stays editable for other notification cycles.
+            if 4 <= month <= 9:
+                start_year, start_month = year, 4
+            elif month >= 10:
+                start_year, start_month = year, 10
+            else:
+                start_year, start_month = year - 1, 10
+            preset = f"{start_year:04d}-{start_month:02d}-01"
+
+            dlg = DARateDialog(self, preset_location=m['location_id'],
+                               preset_skill=m['skill'], preset_date=preset)
+            self.wait_window(dlg)
+            if not dlg.saved:
+                return False
 
     def _insert_salary_row(self, sal):
         code = sal.get('emp_code', '')
@@ -1807,15 +2020,33 @@ class EmployeeForm(tk.Toplevel):
         field(sec2, 1, 0, "Status",        "status", 'Active', 12, options=['Active', 'Inactive'])
         field(sec2, 1, 1, "Tax Regime",    "tax_regime", 'new', 12, options=['new', 'old'])
 
+        # Location + skill decide which Government DA notification applies
+        self._locations = db.list_locations()
+        loc_names = [f"{l['id']} - {l['name']}" for l in self._locations]
+        cur_loc = ''
+        if emp.get('location_id'):
+            for l in self._locations:
+                if l['id'] == emp['location_id']:
+                    cur_loc = f"{l['id']} - {l['name']}"
+        field(sec2, 2, 0, "Location", "_location", cur_loc, 20, options=loc_names)
+        field(sec2, 2, 1, "Skill Category", "skill_category",
+              emp.get('skill_category') or 'Unskilled', 16, options=list(db.SKILL_CATEGORIES))
+        tk.Label(sec2, text="DA is taken from the Government notification for this Location + Skill.",
+                 font=("Segoe UI", 8), bg=C_BG, fg=C_MUTED).grid(
+            row=3, column=0, columnspan=4, sticky='w', padx=12, pady=(0, 4))
+
         # Salary — entered as PER-DAY rates. The month's salary = per-day rate x days the
         # employee actually came (entered while processing salary), not a flat monthly figure.
         sec3 = section("Salary Components (₹ PER DAY)")
         sec3.pack(fill=tk.X)
         field(sec3, 0, 0, "Basic (Per Day)",       "basic", 0, 12)
         field(sec3, 0, 1, "HRA (Per Day)",         "hra",   0, 12)
-        field(sec3, 1, 0, "DA (Per Day)",          "da",    0, 12)
-        field(sec3, 1, 1, "Special Allow. (Per Day)", "special_allowance", 0, 12)
-        field(sec3, 2, 0, "Other Allow. (Per Day)",   "other_allowance", 0, 12)
+        field(sec3, 1, 0, "Special Allow. (Per Day)", "special_allowance", 0, 12)
+        field(sec3, 1, 1, "Other Allow. (Per Day)",   "other_allowance", 0, 12)
+        tk.Label(sec3, text="DA is not entered here — it comes from the Govt DA screen "
+                            "for this employee's location and skill category.",
+                 font=("Segoe UI", 8), bg=C_BG, fg=C_MUTED).grid(
+            row=2, column=0, columnspan=4, sticky='w', padx=12, pady=(2, 4))
 
         # Statutory
         sec4 = section("Statutory Deductions")
@@ -1853,6 +2084,15 @@ class EmployeeForm(tk.Toplevel):
                 val = 0
             data[key] = val
 
+        # Location dropdown holds "id - name"; store just the id
+        loc_label = data.pop('_location', '')
+        data['location_id'] = int(loc_label.split(' - ')[0]) if loc_label else None
+
+        # DA is never typed here — it comes from the Govt DA table at payroll time.
+        # Keep whatever is already stored so historical records stay intact.
+        existing = db.get_employee(self.emp_id) if self.emp_id else None
+        data['da'] = (existing['da'] if existing else 0) or 0
+
         if not data.get('emp_code') or not data.get('name'):
             messagebox.showerror("Validation", "Employee Code and Name are required.", parent=self)
             return
@@ -1860,6 +2100,13 @@ class EmployeeForm(tk.Toplevel):
         if db.emp_code_exists(data['emp_code'], self.emp_id):
             messagebox.showerror("Duplicate", "Employee code already exists.", parent=self)
             return
+
+        if not data['location_id']:
+            if not messagebox.askyesno(
+                    "No Location Set",
+                    "No location is set for this employee, so the Government DA cannot be "
+                    "applied and payroll will not run for them.\n\nSave anyway?", parent=self):
+                return
 
         # Masked Aadhaar means unchanged — keep the stored original
         if 'X' in str(data.get('aadhaar', '')):
@@ -2000,6 +2247,145 @@ class SalaryEditDialog(tk.Toplevel):
         messagebox.showinfo("Saved", "Salary record updated.", parent=self)
         if self.callback:
             self.callback()
+        self.destroy()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  GOVERNMENT DA ENTRY DIALOG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class DARateDialog(tk.Toplevel):
+    """Enter one Government DA notification for a location + skill category.
+
+    Notifications are issued as a monthly rupee figure (VDA), a per-day figure,
+    or as a percentage of basic — all three are accepted here.
+    """
+    def __init__(self, parent, preset_location=None, preset_skill=None, preset_date=None):
+        super().__init__(parent)
+        self.saved = False
+        self.title("Add Government DA Notification")
+        self.geometry("560x430")
+        self.configure(bg=C_BG)
+        self.grab_set()
+
+        frame = tk.Frame(self, bg=C_BG, padx=24, pady=18)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        self._locations = db.list_locations()
+        loc_labels = [f"{l['id']} - {l['name']}" for l in self._locations]
+
+        def label(txt, r):
+            tk.Label(frame, text=txt, font=("Segoe UI", 10, "bold"), bg=C_BG,
+                     width=20, anchor='e').grid(row=r, column=0, sticky='e', padx=8, pady=8)
+
+        label("Location", 0)
+        self._loc = tk.StringVar(value=loc_labels[0] if loc_labels else '')
+        if preset_location:
+            for lb in loc_labels:
+                if lb.startswith(f"{preset_location} -"):
+                    self._loc.set(lb)
+        ttk.Combobox(frame, textvariable=self._loc, values=loc_labels,
+                     state='readonly', width=24).grid(row=0, column=1, sticky='w', columnspan=2)
+
+        label("Skill Category", 1)
+        self._skill = tk.StringVar(value=preset_skill or db.SKILL_CATEGORIES[0])
+        ttk.Combobox(frame, textvariable=self._skill, values=list(db.SKILL_CATEGORIES),
+                     state='readonly', width=24).grid(row=1, column=1, sticky='w', columnspan=2)
+
+        label("Effective From", 2)
+        self._eff = tk.StringVar(value=preset_date or datetime.now().strftime('%Y-%m-%d'))
+        tk.Entry(frame, textvariable=self._eff, width=16,
+                 font=("Segoe UI", 10)).grid(row=2, column=1, sticky='w')
+        tk.Label(frame, text="YYYY-MM-DD  (e.g. 2026-04-01)", font=("Segoe UI", 8),
+                 bg=C_BG, fg=C_MUTED).grid(row=2, column=2, sticky='w')
+
+        label("DA is given as", 3)
+        self._mode = tk.StringVar(value='per_day')
+        modes = tk.Frame(frame, bg=C_BG)
+        modes.grid(row=3, column=1, sticky='w', columnspan=2)
+        for txt, val in (("₹ per day", 'per_day'), ("₹ per month", 'per_month'),
+                         ("% of basic", 'percent')):
+            tk.Radiobutton(modes, text=txt, variable=self._mode, value=val, bg=C_BG,
+                           font=("Segoe UI", 9), activebackground=C_BG,
+                           command=self._update_preview).pack(side=tk.LEFT, padx=(0, 12))
+
+        label("Value", 4)
+        self._value = tk.StringVar(value='0')
+        v_ent = tk.Entry(frame, textvariable=self._value, width=16, font=("Segoe UI", 10))
+        v_ent.grid(row=4, column=1, sticky='w')
+        self._value.trace_add('write', lambda *a: self._update_preview())
+
+        label("Monthly ÷ by", 5)
+        self._divisor = tk.StringVar(value='26')
+        ttk.Combobox(frame, textvariable=self._divisor, values=['26', '30'],
+                     state='readonly', width=6).grid(row=5, column=1, sticky='w')
+        tk.Label(frame, text="days — used only for '₹ per month'", font=("Segoe UI", 8),
+                 bg=C_BG, fg=C_MUTED).grid(row=5, column=2, sticky='w')
+        self._divisor.trace_add('write', lambda *a: self._update_preview())
+
+        label("Note", 6)
+        self._note = tk.StringVar()
+        tk.Entry(frame, textvariable=self._note, width=32,
+                 font=("Segoe UI", 10)).grid(row=6, column=1, sticky='w', columnspan=2)
+
+        self._preview = tk.Label(frame, text="", font=("Segoe UI", 10, "bold"), bg=C_WHITE,
+                                 fg=C_DARK, anchor='w', padx=12, pady=10,
+                                 highlightbackground=C_BORDER, highlightthickness=1)
+        self._preview.grid(row=7, column=0, columnspan=3, sticky='ew', pady=(14, 6))
+
+        btns = tk.Frame(frame, bg=C_BG)
+        btns.grid(row=8, column=0, columnspan=3, pady=10)
+        tb.Button(btns, text="💾 Save Notification", command=self._save,
+                  bootstyle="success").pack(side=tk.LEFT, padx=6)
+        tb.Button(btns, text="Cancel", command=self.destroy,
+                  bootstyle="secondary").pack(side=tk.LEFT, padx=6)
+
+        self._update_preview()
+
+    def _computed(self):
+        """Returns (rate_type, stored_value) or raises ValueError."""
+        raw = float(self._value.get() or 0)
+        mode = self._mode.get()
+        if mode == 'percent':
+            return 'percent', raw
+        if mode == 'per_month':
+            return 'amount', round(raw / float(self._divisor.get() or 26), 2)
+        return 'amount', round(raw, 2)
+
+    def _update_preview(self):
+        try:
+            rate_type, val = self._computed()
+        except ValueError:
+            self._preview.config(text="Enter a number for the DA value.")
+            return
+        if rate_type == 'percent':
+            self._preview.config(text=f"Stored as: {val:g}% of basic per day")
+        else:
+            self._preview.config(
+                text=f"Stored as: ₹{val:,.2f} per day     (≈ ₹{val * 26:,.2f} for a 26-day month)")
+
+    def _save(self):
+        if not self._loc.get():
+            messagebox.showerror("Error", "Select a location.", parent=self)
+            return
+        eff = self._eff.get().strip()
+        try:
+            datetime.strptime(eff, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Error", "Effective From must be in YYYY-MM-DD format.", parent=self)
+            return
+        try:
+            rate_type, val = self._computed()
+        except ValueError:
+            messagebox.showerror("Error", "DA value must be a number.", parent=self)
+            return
+        if val <= 0:
+            messagebox.showerror("Error", "DA value must be greater than zero.", parent=self)
+            return
+
+        loc_id = int(self._loc.get().split(' - ')[0])
+        db.set_da_rate(loc_id, self._skill.get(), eff, val, rate_type, self._note.get().strip())
+        self.saved = True
         self.destroy()
 
 

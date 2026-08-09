@@ -120,6 +120,35 @@ def init_db():
         UNIQUE(emp_id, year, month)
     )""")
 
+    # ── Locations & Government DA (VDA) ───────────────────────────────────────
+    # Government notifies DA half-yearly, separately for each area and skill
+    # category. Storing it once per (location, skill, effective date) means it is
+    # entered a single time and every employee in that area/skill — including
+    # people added later — reuses it automatically.
+    c.execute("""CREATE TABLE IF NOT EXISTS locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        is_active INTEGER DEFAULT 1
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS da_rates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        location_id INTEGER NOT NULL,
+        skill TEXT NOT NULL,
+        effective_from TEXT NOT NULL,
+        rate_type TEXT NOT NULL DEFAULT 'amount',
+        da_value REAL NOT NULL,
+        note TEXT DEFAULT '',
+        UNIQUE(location_id, skill, effective_from),
+        FOREIGN KEY (location_id) REFERENCES locations(id)
+    )""")
+
+    emp_cols = {row['name'] for row in c.execute("PRAGMA table_info(employees)").fetchall()}
+    if 'location_id' not in emp_cols:
+        c.execute("ALTER TABLE employees ADD COLUMN location_id INTEGER REFERENCES locations(id)")
+    if 'skill_category' not in emp_cols:
+        c.execute("ALTER TABLE employees ADD COLUMN skill_category TEXT DEFAULT 'Unskilled'")
+
     c.execute("""CREATE TABLE IF NOT EXISTS attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         emp_id INTEGER NOT NULL,
@@ -247,8 +276,9 @@ def add_employee(data):
         (emp_code, name, father_name, dob, doj, designation, department, gender,
          pan, aadhaar, bank_name, bank_account, ifsc, pf_number, esi_number, uan,
          basic, hra, da, special_allowance, other_allowance,
-         pf_applicable, esi_applicable, tds_applicable, tax_regime, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         pf_applicable, esi_applicable, tds_applicable, tax_regime, status,
+         location_id, skill_category)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (data['emp_code'], data['name'], data['father_name'], data['dob'],
                   data['doj'], data['designation'], data['department'], data['gender'],
                   data['pan'], data['aadhaar'], data['bank_name'], data['bank_account'],
@@ -256,7 +286,8 @@ def add_employee(data):
                   data['basic'], data['hra'], data['da'],
                   data['special_allowance'], data['other_allowance'],
                   data['pf_applicable'], data['esi_applicable'], data['tds_applicable'],
-                  data['tax_regime'], data['status']))
+                  data['tax_regime'], data['status'],
+                  data.get('location_id'), data.get('skill_category', 'Unskilled')))
     emp_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -269,7 +300,8 @@ def update_employee(emp_id, data):
         emp_code=?, name=?, father_name=?, dob=?, doj=?, designation=?, department=?, gender=?,
         pan=?, aadhaar=?, bank_name=?, bank_account=?, ifsc=?, pf_number=?, esi_number=?, uan=?,
         basic=?, hra=?, da=?, special_allowance=?, other_allowance=?,
-        pf_applicable=?, esi_applicable=?, tds_applicable=?, tax_regime=?, status=?
+        pf_applicable=?, esi_applicable=?, tds_applicable=?, tax_regime=?, status=?,
+        location_id=?, skill_category=?
         WHERE id=?""",
                  (data['emp_code'], data['name'], data['father_name'], data['dob'],
                   data['doj'], data['designation'], data['department'], data['gender'],
@@ -278,7 +310,8 @@ def update_employee(emp_id, data):
                   data['basic'], data['hra'], data['da'],
                   data['special_allowance'], data['other_allowance'],
                   data['pf_applicable'], data['esi_applicable'], data['tds_applicable'],
-                  data['tax_regime'], data['status'], emp_id))
+                  data['tax_regime'], data['status'],
+                  data.get('location_id'), data.get('skill_category', 'Unskilled'), emp_id))
     conn.commit()
     conn.close()
 
@@ -410,6 +443,160 @@ def attendance_days_worked(emp_id, year, month, total_days):
     absent = sum(1 for r in rows if r['status'] == 'A')
     half = sum(1 for r in rows if r['status'] == 'H')
     return max(0.0, total_days - absent - 0.5 * half)
+
+
+# ---------- Locations ----------
+
+LOCATION_NAME_MAX = 12
+SKILL_CATEGORIES = ('Unskilled', 'Semi-Skilled', 'Skilled', 'Highly Skilled')
+
+
+def list_locations(active_only=True):
+    conn = get_conn()
+    q = "SELECT * FROM locations"
+    if active_only:
+        q += " WHERE is_active=1"
+    rows = conn.execute(q + " ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_location(name):
+    """Each location gets its own number (the row id). Name is capped at 12 chars."""
+    name = (name or '').strip()[:LOCATION_NAME_MAX]
+    if not name:
+        raise ValueError("Location name cannot be empty.")
+    conn = get_conn()
+    try:
+        cur = conn.execute("INSERT INTO locations (name) VALUES (?)", (name,))
+        conn.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError(f"Location '{name}' already exists.")
+    finally:
+        conn.close()
+
+
+def rename_location(loc_id, name):
+    name = (name or '').strip()[:LOCATION_NAME_MAX]
+    if not name:
+        raise ValueError("Location name cannot be empty.")
+    conn = get_conn()
+    conn.execute("UPDATE locations SET name=? WHERE id=?", (name, loc_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_location(loc_id):
+    """Refuses if any employee or DA rate still points at this location."""
+    conn = get_conn()
+    used = conn.execute("SELECT COUNT(*) FROM employees WHERE location_id=?", (loc_id,)).fetchone()[0]
+    rates = conn.execute("SELECT COUNT(*) FROM da_rates WHERE location_id=?", (loc_id,)).fetchone()[0]
+    if used or rates:
+        conn.close()
+        raise ValueError(f"Cannot delete: {used} employee(s) and {rates} DA rate(s) use this location.")
+    conn.execute("DELETE FROM locations WHERE id=?", (loc_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- Government DA (VDA) rates ----------
+
+def set_da_rate(location_id, skill, effective_from, da_value, rate_type='amount', note=''):
+    """Record a Government DA notification for one area + skill category.
+
+    Re-entering the same (location, skill, effective_from) corrects that entry
+    instead of stacking duplicates, so a mistyped DA can simply be fixed.
+    `rate_type` is 'amount' (rupees per day) or 'percent' (% of basic).
+    """
+    if rate_type not in ('amount', 'percent'):
+        raise ValueError("rate_type must be 'amount' or 'percent'")
+    conn = get_conn()
+    conn.execute("""INSERT INTO da_rates (location_id, skill, effective_from, rate_type, da_value, note)
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(location_id, skill, effective_from)
+                    DO UPDATE SET rate_type=excluded.rate_type,
+                                  da_value=excluded.da_value,
+                                  note=excluded.note""",
+                 (location_id, skill, effective_from, rate_type, float(da_value), note))
+    conn.commit()
+    conn.close()
+
+
+def list_da_rates(location_id=None):
+    conn = get_conn()
+    q = """SELECT d.*, l.name AS location_name FROM da_rates d
+           JOIN locations l ON d.location_id = l.id"""
+    params = ()
+    if location_id:
+        q += " WHERE d.location_id=?"
+        params = (location_id,)
+    rows = conn.execute(q + " ORDER BY d.effective_from DESC, l.name, d.skill", params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_da_rate(rate_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM da_rates WHERE id=?", (rate_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_da_for_month(location_id, skill, year, month):
+    """The DA notification in force for a given month: the most recent entry
+    effective on or before that month's end. Entering a new DA today therefore
+    never changes months that fall in an earlier notification period."""
+    if not location_id:
+        return None
+    month_end = f"{year:04d}-{month:02d}-31"
+    conn = get_conn()
+    row = conn.execute("""SELECT * FROM da_rates
+                          WHERE location_id=? AND skill=? AND effective_from <= ?
+                          ORDER BY effective_from DESC, id DESC LIMIT 1""",
+                       (location_id, skill or 'Unskilled', month_end)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def resolve_da_per_day(location_id, skill, year, month, basic_per_day):
+    """DA per day for an employee in a month, or None if the Government DA for
+    that area/skill/period has not been entered yet."""
+    rate = get_da_for_month(location_id, skill, year, month)
+    if not rate:
+        return None
+    if rate['rate_type'] == 'percent':
+        return round(float(basic_per_day or 0) * rate['da_value'] / 100.0, 2)
+    return round(rate['da_value'], 2)
+
+
+def missing_da_for_month(year, month):
+    """Which (location, skill) pairs have active employees but no DA notification
+    covering this month. Used to prompt for the DA before payroll is computed."""
+    conn = get_conn()
+    rows = conn.execute("""SELECT e.location_id, e.skill_category,
+                                  COALESCE(l.name, '(no location)') AS location_name,
+                                  COUNT(*) AS emp_count,
+                                  GROUP_CONCAT(e.name, ', ') AS emp_names
+                           FROM employees e
+                           LEFT JOIN locations l ON e.location_id = l.id
+                           WHERE e.status='Active'
+                           GROUP BY e.location_id, e.skill_category""").fetchall()
+    conn.close()
+
+    missing = []
+    for r in rows:
+        skill = r['skill_category'] or 'Unskilled'
+        if not r['location_id']:
+            missing.append({'location_id': None, 'location_name': '(no location set)',
+                            'skill': skill, 'emp_count': r['emp_count'],
+                            'emp_names': r['emp_names'], 'reason': 'no_location'})
+            continue
+        if get_da_for_month(r['location_id'], skill, year, month) is None:
+            missing.append({'location_id': r['location_id'], 'location_name': r['location_name'],
+                            'skill': skill, 'emp_count': r['emp_count'],
+                            'emp_names': r['emp_names'], 'reason': 'no_rate'})
+    return missing
 
 
 # ---------- Salary history ----------
