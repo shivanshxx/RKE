@@ -26,21 +26,32 @@ def _parse_version(v):
     return tuple(parts)
 
 
-def check_for_update(current_version, timeout=5):
-    """Returns (latest_version, download_url) if a newer release exists, else (None, None)."""
+def get_latest_release(timeout=8):
+    """
+    Fetch the latest published release. Returns a dict with tag, published
+    date (DD-MM-YYYY), release notes and the .exe download URL — or None if
+    the check could not be completed (offline / rate-limited / no releases).
+    """
     try:
         req = urllib.request.Request(LATEST_RELEASE_API, headers={"Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode('utf-8'))
     except Exception:
-        return None, None  # offline, rate-limited, or no releases yet — fail silently
+        return None
 
-    latest_tag = data.get('tag_name', '')
-    if not latest_tag:
-        return None, None
+    tag = data.get('tag_name', '')
+    if not tag:
+        return None
 
-    if _parse_version(latest_tag) <= _parse_version(current_version):
-        return None, None
+    published = data.get('published_at', '') or ''
+    published_display = ''
+    if published:
+        try:
+            from datetime import datetime
+            published_display = datetime.strptime(
+                published, '%Y-%m-%dT%H:%M:%SZ').strftime('%d-%m-%Y')
+        except ValueError:
+            published_display = published[:10]
 
     download_url = None
     for asset in data.get('assets', []):
@@ -48,10 +59,29 @@ def check_for_update(current_version, timeout=5):
             download_url = asset.get('browser_download_url')
             break
 
-    if not download_url:
-        return None, None
+    return {
+        'tag': tag,
+        'version': tag.lstrip('vV'),
+        'name': data.get('name', '') or tag,
+        'notes': (data.get('body', '') or '').strip(),
+        'published': published_display,
+        'download_url': download_url,
+        'html_url': data.get('html_url', ''),
+    }
 
-    return latest_tag, download_url
+
+def is_newer(latest_version, current_version):
+    return _parse_version(latest_version) > _parse_version(current_version)
+
+
+def check_for_update(current_version, timeout=5):
+    """Returns (latest_version, download_url) if a newer release exists, else (None, None)."""
+    rel = get_latest_release(timeout=timeout)
+    if not rel or not rel.get('download_url'):
+        return None, None
+    if not is_newer(rel['tag'], current_version):
+        return None, None
+    return rel['tag'], rel['download_url']
 
 
 def download_and_apply_update(download_url, progress_callback=None):

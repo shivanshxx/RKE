@@ -23,7 +23,18 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
+BUILD_DATE = "09-08-2026"   # bumped at each release build
+
+
+def installed_on():
+    """Date this copy of the software was installed/updated on this machine —
+    the .exe's own file timestamp (updates overwrite it, so it stays accurate)."""
+    try:
+        target = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        return datetime.fromtimestamp(os.path.getmtime(target)).strftime('%d-%m-%Y')
+    except Exception:
+        return BUILD_DATE
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 db.init_db()
@@ -80,20 +91,29 @@ class PayrollApp(tb.Window):
     # ── Auto-update ────────────────────────────────────────────────────────────
 
     def _check_for_updates(self):
+        """Silent check on startup — only speaks up if an update exists."""
+        if not getattr(sys, 'frozen', False):
+            return
         def worker():
-            latest_tag, download_url = update_checker.check_for_update(APP_VERSION)
-            if latest_tag:
-                self.after(0, lambda: self._prompt_update(latest_tag, download_url))
+            rel = update_checker.get_latest_release()
+            if rel and rel.get('download_url') and update_checker.is_newer(rel['tag'], APP_VERSION):
+                self.after(0, lambda: self._prompt_update(
+                    rel['tag'], rel['download_url'], notes=rel.get('notes', '')))
         threading.Thread(target=worker, daemon=True).start()
 
-    def _prompt_update(self, latest_tag, download_url):
+    def _prompt_update(self, latest_tag, download_url, notes=''):
         if not getattr(sys, 'frozen', False):
-            return  # running from source — update via `git pull` instead
-        if not messagebox.askyesno(
-            "Update Available",
-            f"A new version ({latest_tag}) is available. You're on v{APP_VERSION}.\n\n"
-            "Download and install now? The app will restart automatically."
-        ):
+            messagebox.showinfo(
+                "Update Available",
+                f"Version {latest_tag} is available (you're on v{APP_VERSION}).\n\n"
+                "You are running from source — update with:  git pull")
+            return
+        msg = f"A new version ({latest_tag}) is available. You're on v{APP_VERSION}.\n\n"
+        if notes:
+            trimmed = notes if len(notes) <= 400 else notes[:400] + "…"
+            msg += "What's new:\n" + trimmed + "\n\n"
+        msg += "Download and install now? The app will restart automatically."
+        if not messagebox.askyesno("Update Available", msg):
             return
 
         progress = tk.Toplevel(self)
@@ -195,7 +215,7 @@ class PayrollApp(tb.Window):
             self._nav_btns[label] = (btn, accent, row)
 
         # Version at bottom
-        tk.Label(self.sidebar, text=f"v{APP_VERSION}  •  Shram Sahinta Compliant",
+        tk.Label(self.sidebar, text=f"v{APP_VERSION}  •  {BUILD_DATE}",
                  font=("Segoe UI", 8), bg=C_SIDEBAR, fg="#6E6155").pack(side=tk.BOTTOM, pady=12)
 
         # Right content area
@@ -1546,6 +1566,55 @@ class PayrollApp(tb.Window):
             row=bk_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
         tb.Button(frame, text="📤 Backup Now", command=self._backup_now, bootstyle="success").grid(row=bk_row+3, column=0, sticky='w', padx=10)
         tb.Button(frame, text="📥 Restore From Backup", command=self._restore_backup, bootstyle="primary").grid(row=bk_row+3, column=1, sticky='w', padx=10)
+
+        # ── Software & Updates ────────────────────────────────────────────────
+        up_row = bk_row + 4
+        ttk.Separator(frame, orient='horizontal').grid(row=up_row, column=0, columnspan=6,
+                                                        sticky='ew', pady=(15, 15))
+        tk.Label(frame, text="🔄 Software & Updates", font=("Segoe UI", 12, "bold"),
+                 bg=C_BG, fg=C_DARK).grid(row=up_row+1, column=0, columnspan=6, sticky='w', padx=10)
+        tk.Label(frame,
+                 text=f"Version {APP_VERSION}  •  Released {BUILD_DATE}  •  Installed on this PC {installed_on()}",
+                 font=("Segoe UI", 9), bg=C_BG, fg="#7A6E60").grid(
+            row=up_row+2, column=0, columnspan=6, sticky='w', padx=10, pady=(2, 8))
+
+        self._update_status = tk.StringVar(value="")
+        tb.Button(frame, text="🔍 Check for Updates", command=self._manual_update_check,
+                  bootstyle="primary").grid(row=up_row+3, column=0, sticky='w', padx=10)
+        tk.Label(frame, textvariable=self._update_status, font=("Segoe UI", 9),
+                 bg=C_BG, fg=C_DARK, justify=tk.LEFT).grid(
+            row=up_row+4, column=0, columnspan=6, sticky='w', padx=10, pady=(8, 0))
+
+    def _manual_update_check(self):
+        self._update_status.set("Checking for updates…")
+
+        def worker():
+            rel = update_checker.get_latest_release()
+            self.after(0, lambda: self._show_update_result(rel))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_update_result(self, rel):
+        if rel is None:
+            self._update_status.set(
+                "⚠️  Could not check for updates — no internet connection, or GitHub is unreachable.")
+            return
+
+        if not update_checker.is_newer(rel['tag'], APP_VERSION):
+            self._update_status.set(
+                f"✅  You are up to date.\n"
+                f"Latest release: {rel['tag']} (published {rel['published']}).")
+            return
+
+        self._update_status.set(
+            f"🎉  Update available: {rel['tag']} — published {rel['published']}.")
+        if not rel.get('download_url'):
+            messagebox.showwarning(
+                "Update Incomplete",
+                f"Release {rel['tag']} exists but has no installer attached yet.\n"
+                "Please try again later.")
+            return
+        self._prompt_update(rel['tag'], rel['download_url'], notes=rel.get('notes', ''))
 
     def _backup_now(self):
         dest_dir = filedialog.askdirectory(title="Choose backup folder")
