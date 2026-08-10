@@ -23,8 +23,8 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.7.0"
-BUILD_DATE = "09-08-2026"   # bumped at each release build
+APP_VERSION = "1.7.1"
+BUILD_DATE = "10-08-2026"   # bumped at each release build
 
 
 def installed_on():
@@ -51,6 +51,36 @@ C_RED       = "#C0533B"   # terracotta — destructive actions
 C_HEADER    = "#B5713F"   # warm copper — accents, section bars
 C_BORDER    = "#EAE0D0"   # warm sand — card borders
 C_MUTED     = "#8A7B6C"   # warm taupe — secondary text
+
+def show_modal(dlg, parent, min_w=None, min_h=None):
+    """Make a Toplevel appear reliably: sized to its content, centred on the
+    parent, raised above it and painted before input is grabbed. Without this a
+    dialog opened while the main window is maximised can be created behind it
+    and never drawn."""
+    dlg.update_idletasks()
+    w = max(dlg.winfo_reqwidth(), min_w or 0)
+    h = max(dlg.winfo_reqheight(), min_h or 0)
+    try:
+        x = parent.winfo_rootx() + max(0, (parent.winfo_width() - w) // 2)
+        y = parent.winfo_rooty() + max(0, (parent.winfo_height() - h) // 3)
+    except Exception:
+        x = y = 120
+    dlg.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
+    dlg.deiconify()
+    # The window must actually be on screen before input is grabbed. Grabbing
+    # too early leaves it mapped but unpainted and stuck behind the main
+    # window — which is how it fails when running as a packaged .exe.
+    try:
+        dlg.wait_visibility()
+    except tk.TclError:
+        return
+    dlg.lift()
+    dlg.focus_force()
+    try:
+        dlg.grab_set()
+    except tk.TclError:
+        pass
+
 
 def stripe_rows(tree):
     """Apply alternating row backgrounds to a Treeview (call after filling it)."""
@@ -1883,9 +1913,12 @@ class PasswordDialog(tk.Toplevel):
         self.has_existing = has_existing
         self.callback = callback
         self.title("Change Password" if has_existing else "Set Password")
-        self.geometry("360x280" if has_existing else "360x220")
+        self.transient(parent)
+        self._modal_size = (380, 320)
         self.configure(bg=C_BG)
-        self.grab_set()
+        # Deferred so it runs once every widget below has been created,
+        # letting the dialog size itself to its real content.
+        self.after(0, lambda: show_modal(self, parent, *self._modal_size))
 
         frame = tk.Frame(self, bg=C_BG, padx=25, pady=20)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -1948,10 +1981,13 @@ class EmployeeForm(tk.Toplevel):
         self.emp_id   = emp_id
         self.callback = callback
         self.title("Edit Employee" if emp_id else "Add New Employee")
-        self.geometry("860x680")
+        self.transient(parent)
+        self._modal_size = (880, 700)
         self.resizable(True, True)
         self.configure(bg=C_BG)
-        self.grab_set()
+        # Deferred so it runs once every widget below has been created,
+        # letting the dialog size itself to its real content.
+        self.after(0, lambda: show_modal(self, parent, *self._modal_size))
 
         emp = db.get_employee(emp_id) if emp_id else {}
 
@@ -2168,9 +2204,12 @@ class SalaryEditDialog(tk.Toplevel):
 
         emp = db.get_employee(emp_id)
         self.title(f"Edit Salary — {emp['name']} — {calc.MONTH_NAMES[month]} {year}")
-        self.geometry("480x430")
+        self.transient(parent)
+        self._modal_size = (500, 460)
         self.configure(bg=C_BG)
-        self.grab_set()
+        # Deferred so it runs once every widget below has been created,
+        # letting the dialog size itself to its real content.
+        self.after(0, lambda: show_modal(self, parent, *self._modal_size))
 
         existing = db.get_salary_record(emp_id, year, month) or {}
 
@@ -2264,9 +2303,13 @@ class DARateDialog(tk.Toplevel):
         super().__init__(parent)
         self.saved = False
         self.title("Add Government DA Notification")
-        self.geometry("560x430")
         self.configure(bg=C_BG)
-        self.grab_set()
+        self.minsize(600, 500)
+        self.resizable(True, True)
+        # Keep the dialog tied to and above the main window. Without this a
+        # Toplevel opened while the main window is maximised can be created
+        # behind it and never painted.
+        self.transient(parent)
 
         frame = tk.Frame(self, bg=C_BG, padx=24, pady=18)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -2342,6 +2385,8 @@ class DARateDialog(tk.Toplevel):
 
         self._update_preview()
 
+        show_modal(self, parent, 600, 500)
+
     def _computed(self):
         """Returns (rate_type, stored_value) or raises ValueError."""
         raw = float(self._value.get() or 0)
@@ -2400,9 +2445,12 @@ class FnFDialog(tk.Toplevel):
         self.emp_id = emp_id
         self.emp = db.get_employee(emp_id)
         self.title(f"Full & Final Settlement — {self.emp['name']}")
-        self.geometry("520x520")
+        self.transient(parent)
+        self._modal_size = (560, 560)
         self.configure(bg=C_BG)
-        self.grab_set()
+        # Deferred so it runs once every widget below has been created,
+        # letting the dialog size itself to its real content.
+        self.after(0, lambda: show_modal(self, parent, *self._modal_size))
 
         frame = tk.Frame(self, bg=C_BG, padx=25, pady=18)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -2553,7 +2601,39 @@ class LoginWindow(tb.Window):
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
+ERROR_LOG = os.path.join(
+    os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)),
+    'error_log.txt')
+
+
+def _log_error(exc_type, exc_value, exc_tb):
+    """Record any unhandled error and tell the user, instead of failing
+    silently — a swallowed error otherwise shows up as a blank window."""
+    import traceback
+    detail = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        with open(ERROR_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} — v{APP_VERSION} =====\n{detail}")
+    except Exception:
+        pass
+    try:
+        messagebox.showerror(
+            "Something went wrong",
+            f"{exc_type.__name__}: {exc_value}\n\n"
+            f"Details saved to:\n{ERROR_LOG}\n\n"
+            "Please send that file so this can be fixed.")
+    except Exception:
+        pass
+
+
+def _tk_error(self, *args):
+    _log_error(*sys.exc_info())
+
+
 if __name__ == '__main__':
+    sys.excepthook = _log_error
+    tk.Tk.report_callback_exception = _tk_error  # errors inside button clicks
+
     proceed = True
     if db.has_password():
         login = LoginWindow()
