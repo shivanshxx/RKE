@@ -6,6 +6,7 @@ PF / ESI / TDS / PT (UP) | Salary Slip | Form 16
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading
+import time
 import os
 import sys
 from datetime import datetime
@@ -23,8 +24,8 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.7.1"
-BUILD_DATE = "10-08-2026"   # bumped at each release build
+APP_VERSION = "1.7.2"
+BUILD_DATE = "11-08-2026"   # bumped at each release build
 
 
 def installed_on():
@@ -147,27 +148,76 @@ class PayrollApp(tb.Window):
             return
 
         progress = tk.Toplevel(self)
-        progress.title("Updating...")
-        progress.geometry("320x100")
+        progress.title("Updating")
         progress.configure(bg=C_BG)
-        progress.grab_set()
-        tk.Label(progress, text="Downloading update, please wait...",
-                 font=("Segoe UI", 10), bg=C_BG).pack(pady=15)
-        pbar = ttk.Progressbar(progress, length=260, mode='determinate')
-        pbar.pack(pady=5)
+        progress.transient(self)
+        body = tk.Frame(progress, bg=C_BG, padx=26, pady=20)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(body, text=f"Downloading version {latest_tag}", font=("Segoe UI", 11, "bold"),
+                 bg=C_BG, fg=C_DARK).pack(anchor='w')
+        detail = tk.StringVar(value="Starting download…")
+        tk.Label(body, textvariable=detail, font=("Segoe UI", 9),
+                 bg=C_BG, fg=C_MUTED).pack(anchor='w', pady=(2, 10))
+
+        pbar = ttk.Progressbar(body, length=360, mode='determinate',
+                               style='Update.Horizontal.TProgressbar')
+        pbar.pack()
+        tk.Label(body, text="The app will close and reopen by itself when this finishes.",
+                 font=("Segoe UI", 8), bg=C_BG, fg=C_MUTED).pack(anchor='w', pady=(10, 0))
+
+        cancelled = {'flag': False}
+
+        def do_cancel():
+            cancelled['flag'] = True
+            detail.set("Cancelling…")
+
+        tb.Button(body, text="Cancel", command=do_cancel,
+                  bootstyle="secondary").pack(anchor='e', pady=(12, 0))
+
+        last = {'t': 0.0}
 
         def on_progress(downloaded, total):
-            pct = int(downloaded / total * 100)
-            self.after(0, lambda: pbar.config(value=pct))
+            # Throttle UI updates; refreshing on every 64 KB chunk is wasteful
+            now = time.time()
+            if downloaded and total and now - last['t'] < 0.15 and downloaded < total:
+                return
+            last['t'] = now
+            mb = downloaded / 1_048_576
+            if total:
+                pct = downloaded * 100 // total
+                text = f"{mb:.1f} MB of {total / 1_048_576:.1f} MB   ({pct}%)"
+            else:
+                pct = None
+                text = f"{mb:.1f} MB downloaded"
+            def apply():
+                detail.set(text)
+                if pct is None:
+                    if str(pbar['mode']) != 'indeterminate':
+                        pbar.config(mode='indeterminate')
+                        pbar.start(12)
+                else:
+                    pbar.config(value=pct)
+            self.after(0, apply)
 
         def worker():
             try:
-                update_checker.download_and_apply_update(download_url, progress_callback=on_progress)
-                self.after(0, self.destroy)
-            except Exception as ex:
-                self.after(0, lambda: messagebox.showerror("Update Failed", str(ex), parent=progress))
+                update_checker.download_and_apply_update(
+                    download_url, progress_callback=on_progress,
+                    should_cancel=lambda: cancelled['flag'])
+                self.after(0, lambda: detail.set("Installing… the app will reopen shortly."))
+                self.after(400, self.destroy)
+            except update_checker.UpdateCancelled:
                 self.after(0, progress.destroy)
+            except Exception as ex:
+                msg = str(ex)
+                self.after(0, progress.destroy)
+                self.after(0, lambda: messagebox.showerror(
+                    "Update Failed",
+                    f"{msg}\n\nYou can also download it manually from:\n"
+                    f"https://github.com/{update_checker.GITHUB_REPO}/releases/latest"))
 
+        show_modal(progress, self, 440, 230)
         threading.Thread(target=worker, daemon=True).start()
 
     # ── Theme / styles ─────────────────────────────────────────────────────────
@@ -194,6 +244,9 @@ class PayrollApp(tb.Window):
                         troughcolor=C_BG, borderwidth=0, arrowsize=12)
         style.configure('Horizontal.TProgressbar', background=C_GREEN,
                         troughcolor=C_BORDER, borderwidth=0, thickness=8)
+        # Update dialog: thick, high-contrast bar so progress is unmistakable
+        style.configure('Update.Horizontal.TProgressbar', background=C_GREEN,
+                        troughcolor='#D9CBB4', borderwidth=1, thickness=22)
 
     # ── Layout ─────────────────────────────────────────────────────────────────
 
@@ -2546,18 +2599,28 @@ class FnFDialog(tk.Toplevel):
 #  LOGIN GATE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class LoginWindow(tb.Window):
-    """Shown before the main app if a password has been set. Max 3 attempts."""
+class LoginWindow(tk.Toplevel):
+    """Shown before the main app if a password has been set. Max 3 attempts.
+
+    Deliberately a Toplevel on the main window, not a second Tk root:
+    ttkbootstrap keeps one Style bound to the first root it sees, so a
+    separate login root would leave that Style pointing at a destroyed
+    interpreter and every later screen with a scrollbar or combobox would
+    fail with "application has been destroyed".
+    """
     MAX_ATTEMPTS = 3
 
-    def __init__(self):
-        super().__init__(themename=UI_THEME)
+    def __init__(self, parent):
+        super().__init__(parent)
         self.title("RKE Payroll — Login")
-        self.geometry("380x220")
         self.resizable(False, False)
         self.configure(bg=C_BG)
+        self.transient(parent)
+        self._modal_size = (400, 260)
         self.attempts = 0
         self.authenticated = False
+        # Closing the login window must quit, not silently open the app
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         tk.Label(self, text="🔒 RKE Payroll", font=("Segoe UI", 16, "bold"),
                  bg=C_BG, fg=C_SIDEBAR).pack(pady=(25, 5))
@@ -2575,7 +2638,7 @@ class LoginWindow(tb.Window):
 
         tb.Button(self, text="Login", command=self._try_login, bootstyle="primary").pack(pady=15)
 
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(0, lambda: show_modal(self, parent, *self._modal_size))
 
     def _try_login(self):
         if db.verify_password(self._pwd_var.get()):
@@ -2634,12 +2697,21 @@ if __name__ == '__main__':
     sys.excepthook = _log_error
     tk.Tk.report_callback_exception = _tk_error  # errors inside button clicks
 
-    proceed = True
+    # One Tk root for the whole run. The login screen is a child window of it
+    # rather than a root of its own, because ttkbootstrap binds its Style to
+    # the first root created — destroying that root would break every screen
+    # built afterwards.
+    app = PayrollApp()
     if db.has_password():
-        login = LoginWindow()
-        login.mainloop()
-        proceed = login.authenticated
-
-    if proceed:
-        app = PayrollApp()
-        app.mainloop()
+        app.withdraw()
+        login = LoginWindow(app)
+        app.wait_window(login)
+        if not login.authenticated:
+            app.destroy()
+            sys.exit(0)
+        app.deiconify()
+        try:
+            app.state('zoomed')
+        except Exception:
+            pass
+    app.mainloop()
