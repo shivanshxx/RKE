@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox, filedialog
 import threading
 import time
 import os
+import stat
 import sys
 from datetime import datetime
 
@@ -24,8 +25,8 @@ _tb_themes.STANDARD_THEMES['sandstone']['colors']['primary'] = '#A9703D'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['info'] = '#8A7050'
 _tb_themes.STANDARD_THEMES['sandstone']['colors']['success'] = '#5E8C4A'
 
-APP_VERSION = "1.7.2"
-BUILD_DATE = "11-08-2026"   # bumped at each release build
+APP_VERSION = "1.7.3"
+BUILD_DATE = "16-08-2026"   # bumped at each release build
 
 
 def installed_on():
@@ -38,7 +39,54 @@ def installed_on():
         return BUILD_DATE
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
-db.init_db()
+
+def _start_database():
+    """Open/upgrade the database, explaining clearly if it cannot be used.
+
+    This runs before the main window exists, so a failure here used to kill the
+    program with no window and no message at all — the app simply did not open.
+    The common causes are a restored backup carrying Windows' read-only flag, a
+    folder the user cannot write to, or a damaged file.
+    """
+    try:
+        db.init_db()
+        return True
+    except Exception as ex:
+        import tkinter.messagebox as mb
+        path = db.DB_PATH
+        text = str(ex).lower()
+        if 'readonly' in text or 'read-only' in text:
+            why = ("The data file is marked read-only.\n\n"
+                   "Fix: right-click the file below, choose Properties, "
+                   "untick 'Read-only', then click OK and start the app again.")
+            # Try to clear it automatically — this is the usual case after
+            # restoring a backup from a pen drive or cloud folder.
+            try:
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                db.init_db()
+                return True
+            except Exception:
+                pass
+        elif 'unable to open' in text or 'permission' in text:
+            why = ("The data file cannot be opened. The folder may be "
+                   "write-protected, or the file may be open in another program.")
+        elif 'malformed' in text or 'not a database' in text or 'corrupt' in text:
+            why = ("The data file is damaged or is not an RKE Payroll database.\n\n"
+                   "Restore a backup, or rename the file and start again to "
+                   "begin with an empty database.")
+        else:
+            why = "The data file could not be opened."
+
+        root = tk.Tk()
+        root.withdraw()
+        mb.showerror("Cannot open the payroll data",
+                     f"{why}\n\nFile:\n{path}\n\nDetails: {ex}")
+        root.destroy()
+        return False
+
+
+if not _start_database():
+    sys.exit(1)
 
 # ── Global palette (modern flat theme) ────────────────────────────────────────
 C_SIDEBAR   = "#2E2620"   # warm dark brown — sidebar

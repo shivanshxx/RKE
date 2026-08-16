@@ -9,3 +9,4 @@ dist/
 # Live data — contains employee PII/financial data, never commit
 rke_payroll.db
 output/
+.venv/
